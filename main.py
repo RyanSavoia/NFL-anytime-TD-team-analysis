@@ -352,61 +352,83 @@ class NFLTDBoostCalculator:
         
     def calculate_rz_stats_with_filter(self, df, year_label=""):
         """Calculate red zone stats with 2+ plays filter for consistent methodology"""
-        print(f"Calculating {year_label} red zone stats with 2+ plays filter...")
-        
-        # Filter for regular season only
-        if 'week' in df.columns:
-            reg_season = df[df['week'] <= 18] if year_label == "2024" else df
-        else:
-            reg_season = df
+        try:
+            print(f"Calculating {year_label} red zone stats with 2+ plays filter...")
             
-        rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
-        
-        # Offensive stats
-        offense_results = {}
-        for team in rz_drives['posteam'].unique():
-            if pd.isna(team):
-                continue
-            team_rz = rz_drives[rz_drives['posteam'] == team]
-            play_counts = team_rz.groupby(['game_id', 'fixed_drive']).size()
-            multi_play_drives = play_counts[play_counts > 1]  # 2+ plays filter
+            if df.empty:
+                print(f"No data available for {year_label} red zone stats")
+                return {}, {}
             
-            if len(multi_play_drives) > 0:
-                filtered_drives = team_rz[team_rz.set_index(['game_id', 'fixed_drive']).index.isin(multi_play_drives.index)]
-                drive_summary = filtered_drives.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+            # Filter for regular season only
+            if 'week' in df.columns:
+                reg_season = df[df['week'] <= 18] if year_label == "2024" else df
+            else:
+                reg_season = df
                 
-                drives = len(drive_summary)
-                tds = float(drive_summary['touchdown'].sum())
-                rate = round(tds/drives*100, 1) if drives > 0 else 0
-                offense_results[team] = {
-                    'rz_drives': drives,
-                    'rz_tds': tds,
-                    'rz_td_rate': float(rate)
-                }
-        
-        # Defensive stats
-        defense_results = {}
-        for team in rz_drives['defteam'].unique():
-            if pd.isna(team):
-                continue
-            team_rz = rz_drives[rz_drives['defteam'] == team]
-            play_counts = team_rz.groupby(['game_id', 'fixed_drive']).size()
-            multi_play_drives = play_counts[play_counts > 1]  # Same 2+ plays filter
+            rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
             
-            if len(multi_play_drives) > 0:
-                filtered_drives = team_rz[team_rz.set_index(['game_id', 'fixed_drive']).index.isin(multi_play_drives.index)]
-                drive_summary = filtered_drives.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-                
-                drives = len(drive_summary)
-                tds = float(drive_summary['touchdown'].sum())
-                rate = round(tds/drives*100, 1) if drives > 0 else 0
-                defense_results[team] = {
-                    'rz_drives_faced': drives,
-                    'rz_tds_allowed': tds,
-                    'rz_td_allow_rate': float(rate)
-                }
-        
-        return offense_results, defense_results
+            if rz_drives.empty:
+                print(f"No red zone drives found for {year_label}")
+                return {}, {}
+            
+            # Offensive stats
+            offense_results = {}
+            for team in rz_drives['posteam'].unique():
+                if pd.isna(team):
+                    continue
+                try:
+                    team_rz = rz_drives[rz_drives['posteam'] == team]
+                    play_counts = team_rz.groupby(['game_id', 'fixed_drive']).size()
+                    multi_play_drives = play_counts[play_counts > 1]  # 2+ plays filter
+                    
+                    if len(multi_play_drives) > 0:
+                        filtered_drives = team_rz[team_rz.set_index(['game_id', 'fixed_drive']).index.isin(multi_play_drives.index)]
+                        drive_summary = filtered_drives.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+                        
+                        drives = len(drive_summary)
+                        tds = float(drive_summary['touchdown'].sum())
+                        rate = round(tds/drives*100, 1) if drives > 0 else 0
+                        offense_results[team] = {
+                            'rz_drives': drives,
+                            'rz_tds': tds,
+                            'rz_td_rate': float(rate)
+                        }
+                except Exception as e:
+                    print(f"Error calculating offensive RZ stats for {team}: {str(e)}")
+                    continue
+            
+            # Defensive stats
+            defense_results = {}
+            for team in rz_drives['defteam'].unique():
+                if pd.isna(team):
+                    continue
+                try:
+                    team_rz = rz_drives[rz_drives['defteam'] == team]
+                    play_counts = team_rz.groupby(['game_id', 'fixed_drive']).size()
+                    multi_play_drives = play_counts[play_counts > 1]  # Same 2+ plays filter
+                    
+                    if len(multi_play_drives) > 0:
+                        filtered_drives = team_rz[team_rz.set_index(['game_id', 'fixed_drive']).index.isin(multi_play_drives.index)]
+                        drive_summary = filtered_drives.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+                        
+                        drives = len(drive_summary)
+                        tds = float(drive_summary['touchdown'].sum())
+                        rate = round(tds/drives*100, 1) if drives > 0 else 0
+                        defense_results[team] = {
+                            'rz_drives_faced': drives,
+                            'rz_tds_allowed': tds,
+                            'rz_td_allow_rate': float(rate)
+                        }
+                except Exception as e:
+                    print(f"Error calculating defensive RZ stats for {team}: {str(e)}")
+                    continue
+            
+            print(f"RZ stats calculated: {len(offense_results)} offensive teams, {len(defense_results)} defensive teams")
+            return offense_results, defense_results
+            
+        except Exception as e:
+            print(f"Error in calculate_rz_stats_with_filter: {str(e)}")
+            return {}, {}
     
     def calculate_all_drives_stats(self, df, year_label=""):
         """Calculate all drives TD stats"""
@@ -458,29 +480,56 @@ class NFLTDBoostCalculator:
             start_time = time.time()
             
             def load_2025_data():
-                return nfl.import_pbp_data([2025])
+                try:
+                    return nfl.import_pbp_data([2025])
+                except Exception as e:
+                    print(f"Error loading 2025 NFL data: {str(e)}")
+                    # Return empty DataFrame on error
+                    return pd.DataFrame()
             
             df_2025 = timed_operation("2025 NFL data download", load_2025_data)
             
-            def calculate_rz_stats():
-                return self.calculate_rz_stats_with_filter(df_2025, "2025")
-            
-            def calculate_all_drives():
-                return self.calculate_all_drives_stats(df_2025, "2025")
-            
-            off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
-            off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
-            
-            self.current_2025 = {
-                'offense_rz': off_rz_2025,
-                'defense_rz': def_rz_2025,
-                'offense_all': off_all_2025,
-                'defense_all': def_all_2025
-            }
+            # Only proceed if we have data
+            if df_2025.empty:
+                print("No 2025 data available, using empty datasets")
+                self.current_2025 = {
+                    'offense_rz': {},
+                    'defense_rz': {},
+                    'offense_all': {},
+                    'defense_all': {}
+                }
+            else:
+                def calculate_rz_stats():
+                    try:
+                        return self.calculate_rz_stats_with_filter(df_2025, "2025")
+                    except Exception as e:
+                        print(f"Error calculating RZ stats: {str(e)}")
+                        return {}, {}
+                
+                def calculate_all_drives():
+                    try:
+                        return self.calculate_all_drives_stats(df_2025, "2025")
+                    except Exception as e:
+                        print(f"Error calculating all drives stats: {str(e)}")
+                        return {}, {}
+                
+                off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
+                off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
+                
+                self.current_2025 = {
+                    'offense_rz': off_rz_2025,
+                    'defense_rz': def_rz_2025,
+                    'offense_all': off_all_2025,
+                    'defense_all': def_all_2025
+                }
             
             # Load schedule
             def load_sched():
-                return self.load_schedule()
+                try:
+                    return self.load_schedule()
+                except Exception as e:
+                    print(f"Error loading schedule: {str(e)}")
+                    return False
             
             timed_operation("Schedule data loading", load_sched)
             
@@ -707,13 +756,21 @@ class NFLTDBoostCalculator:
     def analyze_week_matchups(self, week_num=None):
         """Analyze all matchups for a specific week"""
         try:
+            print(f"Starting analyze_week_matchups with week_num: {week_num}")
+            
             if not self.current_2025:
+                print("No current_2025 data, loading...")
                 self.load_data()
             
+            print("Getting week matchups...")
             # Get current week matchups
             matchups = self.get_week_matchups(week_num)
             if not matchups:
-                return {"error": "No matchups found", "week": week_num or self.get_current_week()}
+                error_msg = f"No matchups found for week {week_num or self.get_current_week()}"
+                print(error_msg)
+                return {"error": error_msg, "week": week_num or self.get_current_week()}
+            
+            print(f"Found {len(matchups)} matchups")
             
             results = {
                 'week': week_num or self.get_current_week(),
@@ -723,15 +780,19 @@ class NFLTDBoostCalculator:
             
             print(f"Analyzing {len(matchups)} games for week {results['week']}...")
             
-            for matchup in matchups:
+            for i, matchup in enumerate(matchups):
                 away_team = matchup['away_team']
                 home_team = matchup['home_team']
                 
                 try:
+                    print(f"Analyzing game {i+1}/{len(matchups)}: {away_team} @ {home_team}")
+                    
                     # Analyze away team offense vs home team defense
+                    print(f"  - Analyzing {away_team} offense vs {home_team} defense")
                     away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
                     
                     # Analyze home team offense vs away team defense  
+                    print(f"  - Analyzing {home_team} offense vs {away_team} defense")
                     home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
                     
                     game_result = {
@@ -745,16 +806,27 @@ class NFLTDBoostCalculator:
                     }
                     
                     results['games'].append(game_result)
+                    print(f"  - Game {i+1} analysis complete")
                     
                 except Exception as e:
                     print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
+                    print(f"Error type: {type(e).__name__}")
+                    import traceback
+                    traceback.print_exc()
                     continue
+            
+            if not results['games']:
+                return {"error": "No games could be analyzed", "week": results['week']}
             
             # Sort by highest total team advantages
             def get_sort_key(game):
-                away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-                home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-                return max(away_adv or -999, home_adv or -999)
+                try:
+                    away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+                    home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+                    return max(away_adv or -999, home_adv or -999)
+                except Exception as e:
+                    print(f"Error in sort key: {str(e)}")
+                    return -999
             
             results['games'].sort(key=get_sort_key, reverse=True)
             
@@ -763,7 +835,11 @@ class NFLTDBoostCalculator:
             
         except Exception as e:
             print(f"Error in analyze_week_matchups: {str(e)}")
+            print(f"Error type: {type(e).__name__}")
+            import traceback
+            traceback.print_exc()
             return {"error": f"Matchup analysis failed: {str(e)}"}
+
 
 # Initialize the service
 team_service = TeamAnalysisService()
