@@ -483,7 +483,51 @@ def calculate_rz_stats_with_filter(self, df, year_label=""):
 
 def calculate_all_drives_stats(self, df, year_label=""):
 """Calculate all drives TD stats"""
-@@ -458,29 +480,56 @@
+print(f"Calculating {year_label} all drives stats...")
+
+# Filter for regular season only
+if 'week' in df.columns:
+reg_season = df[df['week'] <= 18] if year_label == "2024" else df
+else:
+reg_season = df
+
+all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+
+# Offensive stats
+offense_all = all_drives.groupby('posteam').apply(
+lambda x: {
+'total_drives': len(x),
+'total_tds': float(x['touchdown'].sum()),
+'total_td_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
+}, include_groups=False
+).to_dict()
+
+# Defensive stats  
+all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+defense_all = all_drives_def.groupby('defteam').apply(
+lambda x: {
+'total_drives_faced': len(x),
+'total_tds_allowed': float(x['touchdown'].sum()),
+'total_td_allow_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
+}, include_groups=False
+).to_dict()
+
+return offense_all, defense_all
+
+def calculate_league_averages(self):
+"""Use hardcoded 2024 league averages instead of calculating them"""
+self.league_averages = self.service_instance.league_averages_2024.copy()
+print(f"Using hardcoded league averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
+print(f"All drives - Scoring: {self.league_averages['all_drives_scoring']}%, Allow: {self.league_averages['all_drives_allow']}%")
+
+def load_data(self):
+"""Load only 2025 current data - use hardcoded 2024 baselines"""
+try:
+# Use hardcoded league averages (no 2024 data loading needed)
+self.calculate_league_averages()
+
+# Only load 2025 current data (much faster)
+print("Loading 2025 current data...")
 start_time = time.time()
 
 def load_2025_data():
@@ -557,7 +601,226 @@ def load_sched():
 
 timed_operation("Schedule data loading", load_sched)
 
-@@ -707,13 +756,21 @@
+print(f"Total 2025 data loading completed in {time.time() - start_time:.2f} seconds")
+print("Data loading complete (using hardcoded 2024 baselines)!")
+
+except Exception as e:
+print(f"Error loading data: {str(e)}")
+raise
+
+def get_current_week(self):
+"""Determine current NFL week based on date and available data"""
+try:
+# Get current play-by-play data to see what's been completed
+try:
+df_2025 = nfl.import_pbp_data([2025])
+if not df_2025.empty:
+max_completed_week = df_2025['week'].max()
+else:
+max_completed_week = 0
+except Exception as e:
+print(f"Error loading 2025 play-by-play data: {str(e)}")
+max_completed_week = 0
+
+# Find the next upcoming games from schedule
+if self.schedule_data is not None:
+try:
+# Use Eastern Time for NFL scheduling consistency
+from datetime import timezone, timedelta
+est = timezone(timedelta(hours=-5))  # EST offset
+today = datetime.now(est).date()
+
+# Look for games today or in the future
+upcoming_games = self.schedule_data[
+self.schedule_data['gameday'].dt.date >= today
+].sort_values('gameday')
+
+if not upcoming_games.empty:
+next_week = upcoming_games['week'].iloc[0]
+
+# Additional logic: if it's Tuesday/Wednesday and we're between weeks,
+# check if we should use the upcoming week
+weekday = today.weekday()  # 0=Monday, 6=Sunday
+
+if weekday in [1, 2]:  # Tuesday or Wednesday
+# Check if there are any remaining games in the max completed week
+current_week_games = self.schedule_data[
+(self.schedule_data['week'] == max_completed_week + 1) &
+(self.schedule_data['gameday'].dt.date >= today)
+]
+
+if current_week_games.empty:
+# No more games this week, move to next week
+next_week = max_completed_week + 2
+
+print(f"Current week determined: {next_week} (max completed: {max_completed_week}, today: {today})")
+return int(next_week)
+
+except Exception as e:
+print(f"Error determining week from schedule: {str(e)}")
+
+# Fallback to max completed week + 1
+fallback_week = int(max_completed_week) + 1
+print(f"Using fallback week: {fallback_week} (max completed: {max_completed_week})")
+return fallback_week
+
+except Exception as e:
+print(f"Could not determine current week: {str(e)}")
+return 3  # Conservative fallback
+
+def get_week_matchups(self, week_num=None):
+"""Get actual matchups for a specific week from schedule data"""
+try:
+if self.schedule_data is None:
+if not self.load_schedule():
+return []
+
+if week_num is None:
+week_num = self.get_current_week()
+
+week_games = self.schedule_data[self.schedule_data['week'] == week_num].copy()
+
+if week_games.empty:
+print(f"No games found for week {week_num}")
+return []
+
+matchups = []
+for _, game in week_games.iterrows():
+matchups.append({
+'away_team': game['away_team'],
+'home_team': game['home_team'],
+'gameday': game['gameday'].strftime('%Y-%m-%d') if pd.notna(game['gameday']) else 'TBD',
+'week': int(game['week'])
+})
+
+print(f"Found {len(matchups)} games for week {week_num}")
+return matchups
+
+except Exception as e:
+print(f"Error getting week {week_num} matchups: {str(e)}")
+return []
+
+def calculate_matchup_boosts(self, offense_team, defense_team):
+"""Calculate TD boost for a specific matchup with percentage changes and detailed labels"""
+if not self.current_2025:
+self.load_data()
+
+results = {
+'matchup': f"{offense_team} vs {defense_team}",
+'offense_team': offense_team,
+'defense_team': defense_team,
+'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+}
+
+# Red Zone Analysis - Percentage changes vs league averages
+rz_analysis = {}
+
+# Offense RZ performance vs league average (percentage change)
+if offense_team in self.current_2025['offense_rz']:
+current_off_rz = self.current_2025['offense_rz'][offense_team]['rz_td_rate']
+league_avg_rz_scoring = self.league_averages['rz_scoring']
+pct_change = ((current_off_rz - league_avg_rz_scoring) / league_avg_rz_scoring * 100) if league_avg_rz_scoring > 0 else 0
+rz_analysis['offense_rz_pct_change_vs_league'] = round(pct_change, 1)
+rz_analysis['offense_2025_rz_td_rate'] = current_off_rz
+rz_analysis['league_2024_rz_scoring_avg'] = league_avg_rz_scoring
+else:
+rz_analysis['offense_rz_pct_change_vs_league'] = None
+rz_analysis['note'] = f"Insufficient {offense_team} RZ data"
+
+# Defense RZ performance vs league average (percentage change)
+if defense_team in self.current_2025['defense_rz']:
+current_def_rz = self.current_2025['defense_rz'][defense_team]['rz_td_allow_rate']
+league_avg_rz_allow = self.league_averages['rz_allow']
+pct_change = ((current_def_rz - league_avg_rz_allow) / league_avg_rz_allow * 100) if league_avg_rz_allow > 0 else 0
+rz_analysis['defense_rz_pct_change_vs_league'] = round(pct_change, 1)
+rz_analysis['defense_2025_rz_allow_rate'] = current_def_rz
+rz_analysis['league_2024_rz_allow_avg'] = league_avg_rz_allow
+else:
+rz_analysis['defense_rz_pct_change_vs_league'] = None
+
+results['red_zone'] = rz_analysis
+
+# All Drives Analysis - Percentage changes vs league averages
+all_drives_analysis = {}
+
+# Offense all drives performance vs league average (percentage change)
+if offense_team in self.current_2025['offense_all']:
+current_off_all = self.current_2025['offense_all'][offense_team]['total_td_rate']
+league_avg_all_scoring = self.league_averages['all_drives_scoring']
+pct_change = ((current_off_all - league_avg_all_scoring) / league_avg_all_scoring * 100) if league_avg_all_scoring > 0 else 0
+all_drives_analysis['offense_all_drives_pct_change_vs_league'] = round(pct_change, 1)
+all_drives_analysis['offense_2025_all_drives_td_rate'] = current_off_all
+all_drives_analysis['league_2024_all_drives_scoring_avg'] = league_avg_all_scoring
+else:
+all_drives_analysis['offense_all_drives_pct_change_vs_league'] = None
+
+# Defense all drives performance vs league average (percentage change)
+if defense_team in self.current_2025['defense_all']:
+current_def_all = self.current_2025['defense_all'][defense_team]['total_td_allow_rate']
+league_avg_all_allow = self.league_averages['all_drives_allow']
+pct_change = ((current_def_all - league_avg_all_allow) / league_avg_all_allow * 100) if league_avg_all_allow > 0 else 0
+all_drives_analysis['defense_all_drives_pct_change_vs_league'] = round(pct_change, 1)
+all_drives_analysis['defense_2025_all_drives_allow_rate'] = current_def_all
+all_drives_analysis['league_2024_all_drives_allow_avg'] = league_avg_all_allow
+else:
+all_drives_analysis['defense_all_drives_pct_change_vs_league'] = None
+
+results['all_drives'] = all_drives_analysis
+
+# Combined Team Analysis - Average RZ and All Drives percentage changes
+combined_analysis = {}
+
+# Combined offense percentage change (average of RZ and all drives)
+off_rz_pct = rz_analysis.get('offense_rz_pct_change_vs_league')
+off_all_pct = all_drives_analysis.get('offense_all_drives_pct_change_vs_league')
+
+if off_rz_pct is not None and off_all_pct is not None:
+combined_analysis['offense_combined_pct_change'] = round((off_rz_pct + off_all_pct) / 2, 1)
+elif off_rz_pct is not None:
+combined_analysis['offense_combined_pct_change'] = off_rz_pct
+elif off_all_pct is not None:
+combined_analysis['offense_combined_pct_change'] = off_all_pct
+else:
+combined_analysis['offense_combined_pct_change'] = None
+
+# Combined defense percentage change (average of RZ and all drives)
+def_rz_pct = rz_analysis.get('defense_rz_pct_change_vs_league')
+def_all_pct = all_drives_analysis.get('defense_all_drives_pct_change_vs_league')
+
+if def_rz_pct is not None and def_all_pct is not None:
+combined_analysis['defense_combined_pct_change'] = round((def_rz_pct + def_all_pct) / 2, 1)
+elif def_rz_pct is not None:
+combined_analysis['defense_combined_pct_change'] = def_rz_pct
+elif def_all_pct is not None:
+combined_analysis['defense_combined_pct_change'] = def_all_pct
+else:
+combined_analysis['defense_combined_pct_change'] = None
+
+# Total team matchup advantage (average of offense and defense combined changes)
+off_combined = combined_analysis.get('offense_combined_pct_change')
+def_combined = combined_analysis.get('defense_combined_pct_change')
+
+if off_combined is not None and def_combined is not None:
+combined_analysis['total_team_td_advantage_pct'] = round((off_combined + def_combined) / 2, 1)
+elif off_combined is not None:
+combined_analysis['total_team_td_advantage_pct'] = round(off_combined / 2, 1)
+elif def_combined is not None:
+combined_analysis['total_team_td_advantage_pct'] = round(def_combined / 2, 1)
+else:
+combined_analysis['total_team_td_advantage_pct'] = None
+
+# Add explanations
+combined_analysis['explanation'] = {
+'offense_combined': f"Average of {offense_team} RZ and all-drives TD rate % change vs 2024 league averages",
+'defense_combined': f"Average of {defense_team} RZ and all-drives TD allow rate % change vs 2024 league averages", 
+'total_advantage': f"Overall team TD scoring advantage: average of offense boost and defense vulnerability",
+'calculation_note': "All red zone stats use 2+ plays filter for consistency with industry standards"
+}
+
+results['combined_team_analysis'] = combined_analysis
+
+return results
+
 def analyze_week_matchups(self, week_num=None):
 """Analyze all matchups for a specific week"""
 try:
@@ -580,7 +843,9 @@ if not matchups:
 
 results = {
 'week': week_num or self.get_current_week(),
-@@ -723,15 +780,19 @@
+'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+'games': []
+}
 
 print(f"Analyzing {len(matchups)} games for week {results['week']}...")
 
@@ -601,7 +866,13 @@ away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
 home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
 
 game_result = {
-@@ -745,16 +806,27 @@
+'game': f"{away_team} @ {home_team}",
+'gameday': matchup['gameday'],
+'week': matchup['week'],
+'away_team': away_team,
+'home_team': home_team,
+'away_offense_vs_home_defense': away_offense_analysis,
+'home_offense_vs_away_defense': home_offense_analysis
 }
 
 results['games'].append(game_result)
@@ -632,7 +903,8 @@ def get_sort_key(game):
 
 results['games'].sort(key=get_sort_key, reverse=True)
 
-@@ -763,8 +835,12 @@
+print(f"Week {results['week']} analysis complete!")
+return results
 
 except Exception as e:
 print(f"Error in analyze_week_matchups: {str(e)}")
@@ -644,3 +916,56 @@ return {"error": f"Matchup analysis failed: {str(e)}"}
 
 # Initialize the service
 team_service = TeamAnalysisService()
+
+@app.route('/')
+def home():
+"""Root endpoint"""
+return jsonify({
+"service": "NFL Team Analysis Service",
+"status": "running",
+"endpoints": [
+"/team-analysis - Get combined Vegas totals + TD boost analysis",
+"/health - Health check",
+"/refresh - Manual data refresh"
+]
+})
+
+@app.route('/team-analysis', methods=['GET'])
+def get_team_analysis():
+"""API endpoint to get combined Vegas totals + TD boost analysis"""
+try:
+results = team_service.get_team_analysis()
+return jsonify(results)
+except Exception as e:
+print(f"Error in team analysis endpoint: {str(e)}")
+return jsonify({"error": str(e)}), 500
+
+@app.route('/refresh', methods=['POST'])
+def refresh_data_endpoint():
+"""Manual data refresh endpoint"""
+try:
+team_service.refresh_data()
+return jsonify({
+"status": "success",
+"message": "Data refreshed successfully",
+"timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+})
+except Exception as e:
+return jsonify({
+"status": "error",
+"message": str(e),
+"timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+}), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+"""Health check endpoint"""
+return jsonify({
+"status": "healthy",
+"service": "Team Analysis Service",
+"timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+"next_refresh": "Daily at 6:00 AM UTC"
+})
+
+if __name__ == '__main__':
+app.run(host='0.0.0.0', port=5000, debug=True)
