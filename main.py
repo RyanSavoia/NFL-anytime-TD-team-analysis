@@ -12,6 +12,14 @@ class TeamAnalysisService:
         """Combines Vegas team totals with TD boost calculations"""
         self.odds_api_key = odds_api_key
         
+        # Hardcoded 2024 league averages (never change, massive startup speed improvement)
+        self.league_averages_2024 = {
+            'rz_scoring': 59.0,
+            'rz_allow': 59.0, 
+            'all_drives_scoring': 23.3,
+            'all_drives_allow': 23.3
+        }
+        
         # Team name mapping: Full Name -> Abbreviation
         self.team_mapping = {
             "Arizona Cardinals": "ARI",
@@ -57,7 +65,7 @@ class TeamAnalysisService:
     def _ensure_calculator_initialized(self):
         """Initialize the TD calculator on first use"""
         if self.td_calculator is None:
-            self.td_calculator = NFLTDBoostCalculator()
+            self.td_calculator = NFLTDBoostCalculator(service_instance=self)
     
     def get_week_parameters(self, week=None):
         """Get consistent edge weight for all season"""
@@ -294,19 +302,38 @@ def get_team_analysis():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/refresh', methods=['POST'])
+def refresh_data_endpoint():
+    """Manual data refresh endpoint"""
+    try:
+        team_service.refresh_data()
+        return jsonify({
+            "status": "success",
+            "message": "Data refreshed successfully",
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "service": "Team Analysis Service",
-        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "next_refresh": "Daily at 6:00 AM UTC"
     })
 
 # Copy your exact NFLTDBoostCalculator class here (keeping all logic unchanged)
 class NFLTDBoostCalculator:
-    def __init__(self):
+    def __init__(self, service_instance=None):
         """Initialize the TD Boost Calculator with consistent methodology"""
+        self.service_instance = service_instance
         self.baselines_2024 = {}
         self.current_2025 = {}
         self.schedule_data = None
@@ -422,80 +449,17 @@ class NFLTDBoostCalculator:
         return offense_all, defense_all
     
     def calculate_league_averages(self):
-        """Calculate 2024 league-wide averages for boost comparisons"""
-        print("Calculating 2024 league averages...")
-        df_2024 = nfl.import_pbp_data([2024])
-        reg_season = df_2024[df_2024['week'] <= 18]
-        
-        # Red Zone league averages (with 2+ plays filter)
-        rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
-        
-        # Filter to drives with 2+ plays for consistency
-        all_rz_drives = []
-        for game_id in rz_drives['game_id'].unique():
-            for team in rz_drives[rz_drives['game_id'] == game_id]['posteam'].unique():
-                if pd.isna(team):
-                    continue
-                team_rz = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['posteam'] == team)]
-                for drive_id in team_rz['fixed_drive'].unique():
-                    drive_plays = team_rz[team_rz['fixed_drive'] == drive_id]
-                    if len(drive_plays) >= 2:  # 2+ plays filter
-                        td_scored = drive_plays['touchdown'].max()
-                        all_rz_drives.append({'scored_td': td_scored, 'is_offense': True})
-                
-                # Same for defense
-                team_rz_def = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['defteam'] == team)]
-                for drive_id in team_rz_def['fixed_drive'].unique():
-                    drive_plays = team_rz_def[team_rz_def['fixed_drive'] == drive_id]
-                    if len(drive_plays) >= 2:  # 2+ plays filter
-                        td_allowed = drive_plays['touchdown'].max()
-                        all_rz_drives.append({'scored_td': td_allowed, 'is_offense': False})
-        
-        rz_df = pd.DataFrame(all_rz_drives)
-        
-        # Calculate averages
-        league_rz_scoring_avg = (rz_df[rz_df['is_offense']]['scored_td'].sum() / 
-                                len(rz_df[rz_df['is_offense']]) * 100) if len(rz_df[rz_df['is_offense']]) > 0 else 0
-        
-        league_rz_allow_avg = (rz_df[~rz_df['is_offense']]['scored_td'].sum() / 
-                              len(rz_df[~rz_df['is_offense']]) * 100) if len(rz_df[~rz_df['is_offense']]) > 0 else 0
-        
-        # All drives league averages
-        all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-        league_all_scoring_avg = (all_drives['touchdown'].sum() / len(all_drives) * 100)
-        
-        all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-        league_all_allow_avg = (all_drives_def['touchdown'].sum() / len(all_drives_def) * 100)
-        
-        self.league_averages = {
-            'rz_scoring': round(float(league_rz_scoring_avg), 1),
-            'rz_allow': round(float(league_rz_allow_avg), 1), 
-            'all_drives_scoring': round(float(league_all_scoring_avg), 1),
-            'all_drives_allow': round(float(league_all_allow_avg), 1)
-        }
-        
-        print(f"League averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
+        """Use hardcoded 2024 league averages instead of calculating them"""
+        self.league_averages = self.service_instance.league_averages_2024.copy()
+        print(f"Using hardcoded league averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
         print(f"All drives - Scoring: {self.league_averages['all_drives_scoring']}%, Allow: {self.league_averages['all_drives_allow']}%")
         
     def load_data(self):
-        """Load both 2024 baseline and 2025 current data"""
-        # Calculate league averages first
+        """Load only 2025 current data - use hardcoded 2024 baselines"""
+        # Use hardcoded league averages (no 2024 data loading needed)
         self.calculate_league_averages()
         
-        # Load 2024 baseline data
-        print("Loading 2024 baseline data...")
-        df_2024 = nfl.import_pbp_data([2024])
-        off_rz_2024, def_rz_2024 = self.calculate_rz_stats_with_filter(df_2024, "2024")
-        off_all_2024, def_all_2024 = self.calculate_all_drives_stats(df_2024, "2024")
-        
-        self.baselines_2024 = {
-            'offense_rz': off_rz_2024,
-            'defense_rz': def_rz_2024,
-            'offense_all': off_all_2024,
-            'defense_all': def_all_2024
-        }
-        
-        # Load 2025 current data
+        # Only load 2025 current data (much faster)
         print("Loading 2025 current data...")
         df_2025 = nfl.import_pbp_data([2025])
         off_rz_2025, def_rz_2025 = self.calculate_rz_stats_with_filter(df_2025, "2025")
@@ -511,7 +475,7 @@ class NFLTDBoostCalculator:
         # Load schedule
         self.load_schedule()
         
-        print("Data loading complete!")
+        print("Data loading complete (using hardcoded 2024 baselines)!")
     
     def get_current_week(self):
         """Determine current NFL week based on date and available data"""
