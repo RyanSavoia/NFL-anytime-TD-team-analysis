@@ -495,30 +495,61 @@ class NFLTDBoostCalculator:
         """Determine current NFL week based on date and available data"""
         try:
             # Get current play-by-play data to see what's been completed
-            df_2025 = nfl.import_pbp_data([2025])
-            if not df_2025.empty:
-                max_completed_week = df_2025['week'].max()
-            else:
+            try:
+                df_2025 = nfl.import_pbp_data([2025])
+                if not df_2025.empty:
+                    max_completed_week = df_2025['week'].max()
+                else:
+                    max_completed_week = 0
+            except Exception as e:
+                print(f"Error loading 2025 play-by-play data: {str(e)}")
                 max_completed_week = 0
             
             # Find the next upcoming games from schedule
             if self.schedule_data is not None:
-                today = datetime.now().date()
-                future_games = self.schedule_data[
-                    self.schedule_data['gameday'].dt.date >= today
-                ].sort_values('gameday')
-                
-                if not future_games.empty:
-                    next_week = future_games['week'].iloc[0]
-                    print(f"Current week determined: {next_week} (max completed: {max_completed_week})")
-                    return int(next_week)
+                try:
+                    # Use Eastern Time for NFL scheduling consistency
+                    from datetime import timezone, timedelta
+                    est = timezone(timedelta(hours=-5))  # EST offset
+                    today = datetime.now(est).date()
+                    
+                    # Look for games today or in the future
+                    upcoming_games = self.schedule_data[
+                        self.schedule_data['gameday'].dt.date >= today
+                    ].sort_values('gameday')
+                    
+                    if not upcoming_games.empty:
+                        next_week = upcoming_games['week'].iloc[0]
+                        
+                        # Additional logic: if it's Tuesday/Wednesday and we're between weeks,
+                        # check if we should use the upcoming week
+                        weekday = today.weekday()  # 0=Monday, 6=Sunday
+                        
+                        if weekday in [1, 2]:  # Tuesday or Wednesday
+                            # Check if there are any remaining games in the max completed week
+                            current_week_games = self.schedule_data[
+                                (self.schedule_data['week'] == max_completed_week + 1) &
+                                (self.schedule_data['gameday'].dt.date >= today)
+                            ]
+                            
+                            if current_week_games.empty:
+                                # No more games this week, move to next week
+                                next_week = max_completed_week + 2
+                        
+                        print(f"Current week determined: {next_week} (max completed: {max_completed_week}, today: {today})")
+                        return int(next_week)
+                        
+                except Exception as e:
+                    print(f"Error determining week from schedule: {str(e)}")
             
             # Fallback to max completed week + 1
-            return int(max_completed_week) + 1
+            fallback_week = int(max_completed_week) + 1
+            print(f"Using fallback week: {fallback_week} (max completed: {max_completed_week})")
+            return fallback_week
                 
         except Exception as e:
             print(f"Could not determine current week: {str(e)}")
-            return 2  # Default fallback
+            return 3  # Conservative fallback
     
     def get_week_matchups(self, week_num=None):
         """Get actual matchups for a specific week from schedule data"""
