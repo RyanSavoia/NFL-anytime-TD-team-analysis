@@ -1,11 +1,26 @@
 from flask import Flask, jsonify
 import requests
 import json
+import time
 from datetime import datetime
 import nfl_data_py as nfl
 import pandas as pd
 
 app = Flask(__name__)
+
+def timed_operation(description, func):
+    """Helper function to time operations and log them"""
+    print(f"Starting {description}...")
+    start_time = time.time()
+    try:
+        result = func()
+        duration = time.time() - start_time
+        print(f"{description} completed in {duration:.2f} seconds")
+        return result
+    except Exception as e:
+        duration = time.time() - start_time
+        print(f"{description} failed after {duration:.2f} seconds: {str(e)}")
+        raise
 
 class TeamAnalysisService:
     def __init__(self, odds_api_key="d8ba5d45eca27e710d7ef2680d8cb452"):
@@ -81,7 +96,8 @@ class TeamAnalysisService:
                 max_week = df_2025['week'].max()
                 return int(max_week) + 1
             return 3
-        except:
+        except Exception as e:
+            print(f"Error getting current week: {str(e)}")
             return 3
     
     def get_vegas_team_totals(self):
@@ -209,125 +225,101 @@ class TeamAnalysisService:
         Combine Vegas team totals with TD boost advantages
         Following GPT's exact formula: team_td_proj = vegas_team_tds * (1 + w_edge * advantage_pct)
         """
-        self._ensure_calculator_initialized()
-        
-        # Get Vegas totals
-        vegas_totals = self.get_vegas_team_totals()
-        if not vegas_totals:
-            return {"error": "No Vegas data available"}
-        
-        # Get week parameters
-        w_edge = self.get_week_parameters(week)
-        
-        # Get TD boost data for all current week games
-        td_boost_results = self.td_calculator.analyze_week_matchups(week)
-        if 'games' not in td_boost_results:
-            return {"error": "No TD boost data available"}
-        
-        # Combine Vegas totals with TD advantages
-        combined_results = {
-            'week': week or self.get_current_week(),
-            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'w_edge': w_edge,
-            'games': []
-        }
-        
-        for game_data in td_boost_results['games']:
-            away_team = game_data['away_team']
-            home_team = game_data['home_team']
-            game_key = f"{away_team}@{home_team}"
+        try:
+            self._ensure_calculator_initialized()
             
-            if game_key not in vegas_totals:
-                continue
+            # Get Vegas totals
+            vegas_totals = self.get_vegas_team_totals()
+            if not vegas_totals:
+                return {"error": "No Vegas data available"}
             
-            vegas_game = vegas_totals[game_key]
+            # Get week parameters
+            w_edge = self.get_week_parameters(week)
             
-            # Get TD advantages (convert from percentage to decimal)
-            away_advantage_raw = game_data['away_offense_vs_home_defense']['combined_team_analysis'].get('total_team_td_advantage_pct', 0)
-            home_advantage_raw = game_data['home_offense_vs_away_defense']['combined_team_analysis'].get('total_team_td_advantage_pct', 0)
+            # Get TD boost data for all current week games
+            td_boost_results = self.td_calculator.analyze_week_matchups(week)
+            if 'games' not in td_boost_results:
+                return {"error": "No TD boost data available", "details": td_boost_results}
             
-            if away_advantage_raw is None:
-                away_advantage_raw = 0
-            if home_advantage_raw is None:
-                home_advantage_raw = 0
-            
-            # Convert to decimal and cap at ±30% (GPT's formula)
-            away_advantage_pct = max(-0.30, min(0.30, away_advantage_raw / 100))
-            home_advantage_pct = max(-0.30, min(0.30, home_advantage_raw / 100))
-            
-            # Apply GPT's formula: team_td_proj = vegas_team_tds * (1 + w_edge * advantage_pct)
-            away_projected_tds = vegas_game['away_vegas_tds'] * (1 + w_edge * away_advantage_pct)
-            home_projected_tds = vegas_game['home_vegas_tds'] * (1 + w_edge * home_advantage_pct)
-            
-            combined_game = {
-                'game': f"{away_team} @ {home_team}",
-                'commence_time': vegas_game['commence_time'],
-                'bookmaker': vegas_game['bookmaker'],
-                'away_team': away_team,
-                'home_team': home_team,
-                
-                # Vegas baseline
-                'away_vegas_tds': vegas_game['away_vegas_tds'],
-                'home_vegas_tds': vegas_game['home_vegas_tds'],
-                
-                # TD advantages
-                'away_td_advantage_pct': round(away_advantage_raw, 1),
-                'home_td_advantage_pct': round(home_advantage_raw, 1),
-                
-                # Final projected TDs (GPT's formula applied)
-                'away_projected_tds': round(away_projected_tds, 2),
-                'home_projected_tds': round(home_projected_tds, 2),
-                
-                # Show the calculation
-                'calculation': {
-                    'w_edge': w_edge,
-                    'away_calc': f"{vegas_game['away_vegas_tds']} * (1 + {w_edge} * {away_advantage_pct:.3f}) = {away_projected_tds:.2f}",
-                    'home_calc': f"{vegas_game['home_vegas_tds']} * (1 + {w_edge} * {home_advantage_pct:.3f}) = {home_projected_tds:.2f}"
-                }
+            # Combine Vegas totals with TD advantages
+            combined_results = {
+                'week': week or self.get_current_week(),
+                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'w_edge': w_edge,
+                'games': []
             }
             
-            combined_results['games'].append(combined_game)
-        
-        return combined_results
+            for game_data in td_boost_results['games']:
+                away_team = game_data['away_team']
+                home_team = game_data['home_team']
+                game_key = f"{away_team}@{home_team}"
+                
+                if game_key not in vegas_totals:
+                    continue
+                
+                vegas_game = vegas_totals[game_key]
+                
+                # Get TD advantages (convert from percentage to decimal)
+                away_advantage_raw = game_data['away_offense_vs_home_defense']['combined_team_analysis'].get('total_team_td_advantage_pct', 0)
+                home_advantage_raw = game_data['home_offense_vs_away_defense']['combined_team_analysis'].get('total_team_td_advantage_pct', 0)
+                
+                if away_advantage_raw is None:
+                    away_advantage_raw = 0
+                if home_advantage_raw is None:
+                    home_advantage_raw = 0
+                
+                # Convert to decimal and cap at ±30% (GPT's formula)
+                away_advantage_pct = max(-0.30, min(0.30, away_advantage_raw / 100))
+                home_advantage_pct = max(-0.30, min(0.30, home_advantage_raw / 100))
+                
+                # Apply GPT's formula: team_td_proj = vegas_team_tds * (1 + w_edge * advantage_pct)
+                away_projected_tds = vegas_game['away_vegas_tds'] * (1 + w_edge * away_advantage_pct)
+                home_projected_tds = vegas_game['home_vegas_tds'] * (1 + w_edge * home_advantage_pct)
+                
+                combined_game = {
+                    'game': f"{away_team} @ {home_team}",
+                    'commence_time': vegas_game['commence_time'],
+                    'bookmaker': vegas_game['bookmaker'],
+                    'away_team': away_team,
+                    'home_team': home_team,
+                    
+                    # Vegas baseline
+                    'away_vegas_tds': vegas_game['away_vegas_tds'],
+                    'home_vegas_tds': vegas_game['home_vegas_tds'],
+                    
+                    # TD advantages
+                    'away_td_advantage_pct': round(away_advantage_raw, 1),
+                    'home_td_advantage_pct': round(home_advantage_raw, 1),
+                    
+                    # Final projected TDs (GPT's formula applied)
+                    'away_projected_tds': round(away_projected_tds, 2),
+                    'home_projected_tds': round(home_projected_tds, 2),
+                    
+                    # Show the calculation
+                    'calculation': {
+                        'w_edge': w_edge,
+                        'away_calc': f"{vegas_game['away_vegas_tds']} * (1 + {w_edge} * {away_advantage_pct:.3f}) = {away_projected_tds:.2f}",
+                        'home_calc': f"{vegas_game['home_vegas_tds']} * (1 + {w_edge} * {home_advantage_pct:.3f}) = {home_projected_tds:.2f}"
+                    }
+                }
+                
+                combined_results['games'].append(combined_game)
+            
+            return combined_results
+            
+        except Exception as e:
+            print(f"Error in get_team_analysis: {str(e)}")
+            return {"error": f"Analysis failed: {str(e)}"}
 
-# Initialize the service
-team_service = TeamAnalysisService()
-
-@app.route('/team-analysis', methods=['GET'])
-def get_team_analysis():
-    """API endpoint to get combined Vegas totals + TD boost analysis"""
-    try:
-        results = team_service.get_team_analysis()
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/refresh', methods=['POST'])
-def refresh_data_endpoint():
-    """Manual data refresh endpoint"""
-    try:
-        team_service.refresh_data()
-        return jsonify({
-            "status": "success",
-            "message": "Data refreshed successfully",
-            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        "status": "healthy",
-        "service": "Team Analysis Service",
-        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        "next_refresh": "Daily at 6:00 AM UTC"
-    })
+    def refresh_data(self):
+        """Refresh data method for manual refresh endpoint"""
+        try:
+            if self.td_calculator:
+                self.td_calculator.load_data()
+            return True
+        except Exception as e:
+            print(f"Error refreshing data: {str(e)}")
+            raise
 
 # Copy your exact NFLTDBoostCalculator class here (keeping all logic unchanged)
 class NFLTDBoostCalculator:
@@ -337,6 +329,7 @@ class NFLTDBoostCalculator:
         self.baselines_2024 = {}
         self.current_2025 = {}
         self.schedule_data = None
+        self.league_averages = {}
         
     def load_schedule(self):
         """Load NFL schedule data"""
@@ -456,42 +449,47 @@ class NFLTDBoostCalculator:
         
     def load_data(self):
         """Load only 2025 current data - use hardcoded 2024 baselines"""
-        # Use hardcoded league averages (no 2024 data loading needed)
-        self.calculate_league_averages()
-        
-        # Only load 2025 current data (much faster)
-        print("Loading 2025 current data...")
-        start_time = time.time()
-        
-        def load_2025_data():
-            return nfl.import_pbp_data([2025])
-        
-        df_2025 = timed_operation("2025 NFL data download", load_2025_data)
-        
-        def calculate_rz_stats():
-            return self.calculate_rz_stats_with_filter(df_2025, "2025")
-        
-        def calculate_all_drives():
-            return self.calculate_all_drives_stats(df_2025, "2025")
-        
-        off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
-        off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
-        
-        self.current_2025 = {
-            'offense_rz': off_rz_2025,
-            'defense_rz': def_rz_2025,
-            'offense_all': off_all_2025,
-            'defense_all': def_all_2025
-        }
-        
-        # Load schedule
-        def load_sched():
-            return self.load_schedule()
-        
-        timed_operation("Schedule data loading", load_sched)
-        
-        print(f"Total 2025 data loading completed in {time.time() - start_time:.2f} seconds")
-        print("Data loading complete (using hardcoded 2024 baselines)!")
+        try:
+            # Use hardcoded league averages (no 2024 data loading needed)
+            self.calculate_league_averages()
+            
+            # Only load 2025 current data (much faster)
+            print("Loading 2025 current data...")
+            start_time = time.time()
+            
+            def load_2025_data():
+                return nfl.import_pbp_data([2025])
+            
+            df_2025 = timed_operation("2025 NFL data download", load_2025_data)
+            
+            def calculate_rz_stats():
+                return self.calculate_rz_stats_with_filter(df_2025, "2025")
+            
+            def calculate_all_drives():
+                return self.calculate_all_drives_stats(df_2025, "2025")
+            
+            off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
+            off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
+            
+            self.current_2025 = {
+                'offense_rz': off_rz_2025,
+                'defense_rz': def_rz_2025,
+                'offense_all': off_all_2025,
+                'defense_all': def_all_2025
+            }
+            
+            # Load schedule
+            def load_sched():
+                return self.load_schedule()
+            
+            timed_operation("Schedule data loading", load_sched)
+            
+            print(f"Total 2025 data loading completed in {time.time() - start_time:.2f} seconds")
+            print("Data loading complete (using hardcoded 2024 baselines)!")
+            
+        except Exception as e:
+            print(f"Error loading data: {str(e)}")
+            raise
     
     def get_current_week(self):
         """Determine current NFL week based on date and available data"""
@@ -556,7 +554,7 @@ class NFLTDBoostCalculator:
     
     def calculate_matchup_boosts(self, offense_team, defense_team):
         """Calculate TD boost for a specific matchup with percentage changes and detailed labels"""
-        if not self.baselines_2024 or not self.current_2025:
+        if not self.current_2025:
             self.load_data()
         
         results = {
@@ -677,59 +675,117 @@ class NFLTDBoostCalculator:
     
     def analyze_week_matchups(self, week_num=None):
         """Analyze all matchups for a specific week"""
-        if not self.baselines_2024 or not self.current_2025:
-            self.load_data()
-        
-        # Get current week matchups
-        matchups = self.get_week_matchups(week_num)
-        if not matchups:
-            return {"error": "No matchups found", "week": week_num or self.get_current_week()}
-        
-        results = {
-            'week': week_num or self.get_current_week(),
-            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'games': []
-        }
-        
-        print(f"Analyzing {len(matchups)} games for week {results['week']}...")
-        
-        for matchup in matchups:
-            away_team = matchup['away_team']
-            home_team = matchup['home_team']
+        try:
+            if not self.current_2025:
+                self.load_data()
             
-            try:
-                # Analyze away team offense vs home team defense
-                away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
+            # Get current week matchups
+            matchups = self.get_week_matchups(week_num)
+            if not matchups:
+                return {"error": "No matchups found", "week": week_num or self.get_current_week()}
+            
+            results = {
+                'week': week_num or self.get_current_week(),
+                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'games': []
+            }
+            
+            print(f"Analyzing {len(matchups)} games for week {results['week']}...")
+            
+            for matchup in matchups:
+                away_team = matchup['away_team']
+                home_team = matchup['home_team']
                 
-                # Analyze home team offense vs away team defense  
-                home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
-                
-                game_result = {
-                    'game': f"{away_team} @ {home_team}",
-                    'gameday': matchup['gameday'],
-                    'week': matchup['week'],
-                    'away_team': away_team,
-                    'home_team': home_team,
-                    'away_offense_vs_home_defense': away_offense_analysis,
-                    'home_offense_vs_away_defense': home_offense_analysis
-                }
-                
-                results['games'].append(game_result)
-                
-            except Exception as e:
-                print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
-                continue
-        
-        # Sort by highest total team advantages
-        def get_sort_key(game):
-            away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-            home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-            return max(away_adv or -999, home_adv or -999)
-        
-        results['games'].sort(key=get_sort_key, reverse=True)
-        
-        print(f"Week {results['week']} analysis complete!")
-        return results
+                try:
+                    # Analyze away team offense vs home team defense
+                    away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
+                    
+                    # Analyze home team offense vs away team defense  
+                    home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
+                    
+                    game_result = {
+                        'game': f"{away_team} @ {home_team}",
+                        'gameday': matchup['gameday'],
+                        'week': matchup['week'],
+                        'away_team': away_team,
+                        'home_team': home_team,
+                        'away_offense_vs_home_defense': away_offense_analysis,
+                        'home_offense_vs_away_defense': home_offense_analysis
+                    }
+                    
+                    results['games'].append(game_result)
+                    
+                except Exception as e:
+                    print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
+                    continue
+            
+            # Sort by highest total team advantages
+            def get_sort_key(game):
+                away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+                home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+                return max(away_adv or -999, home_adv or -999)
+            
+            results['games'].sort(key=get_sort_key, reverse=True)
+            
+            print(f"Week {results['week']} analysis complete!")
+            return results
+            
+        except Exception as e:
+            print(f"Error in analyze_week_matchups: {str(e)}")
+            return {"error": f"Matchup analysis failed: {str(e)}"}
+
+# Initialize the service
+team_service = TeamAnalysisService()
+
+@app.route('/')
+def home():
+    """Root endpoint"""
+    return jsonify({
+        "service": "NFL Team Analysis Service",
+        "status": "running",
+        "endpoints": [
+            "/team-analysis - Get combined Vegas totals + TD boost analysis",
+            "/health - Health check",
+            "/refresh - Manual data refresh"
+        ]
+    })
+
+@app.route('/team-analysis', methods=['GET'])
+def get_team_analysis():
+    """API endpoint to get combined Vegas totals + TD boost analysis"""
+    try:
+        results = team_service.get_team_analysis()
+        return jsonify(results)
+    except Exception as e:
+        print(f"Error in team analysis endpoint: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/refresh', methods=['POST'])
+def refresh_data_endpoint():
+    """Manual data refresh endpoint"""
+    try:
+        team_service.refresh_data()
+        return jsonify({
+            "status": "success",
+            "message": "Data refreshed successfully",
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "service": "Team Analysis Service",
+        "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "next_refresh": "Daily at 6:00 AM UTC"
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
