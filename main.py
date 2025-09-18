@@ -461,9 +461,21 @@ class NFLTDBoostCalculator:
         
         # Only load 2025 current data (much faster)
         print("Loading 2025 current data...")
-        df_2025 = nfl.import_pbp_data([2025])
-        off_rz_2025, def_rz_2025 = self.calculate_rz_stats_with_filter(df_2025, "2025")
-        off_all_2025, def_all_2025 = self.calculate_all_drives_stats(df_2025, "2025")
+        start_time = time.time()
+        
+        def load_2025_data():
+            return nfl.import_pbp_data([2025])
+        
+        df_2025 = timed_operation("2025 NFL data download", load_2025_data)
+        
+        def calculate_rz_stats():
+            return self.calculate_rz_stats_with_filter(df_2025, "2025")
+        
+        def calculate_all_drives():
+            return self.calculate_all_drives_stats(df_2025, "2025")
+        
+        off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
+        off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
         
         self.current_2025 = {
             'offense_rz': off_rz_2025,
@@ -473,8 +485,12 @@ class NFLTDBoostCalculator:
         }
         
         # Load schedule
-        self.load_schedule()
+        def load_sched():
+            return self.load_schedule()
         
+        timed_operation("Schedule data loading", load_sched)
+        
+        print(f"Total 2025 data loading completed in {time.time() - start_time:.2f} seconds")
         print("Data loading complete (using hardcoded 2024 baselines)!")
     
     def get_current_week(self):
