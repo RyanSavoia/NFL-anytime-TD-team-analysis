@@ -321,7 +321,7 @@ class TeamAnalysisService:
             print(f"Error refreshing data: {str(e)}")
             raise
 
-# Updated NFLTDBoostCalculator class with LOCAL VERSION LOGIC
+# Copy your exact NFLTDBoostCalculator class here (keeping all logic unchanged)
 class NFLTDBoostCalculator:
     def __init__(self, service_instance=None):
         """Initialize the TD Boost Calculator with consistent methodology"""
@@ -443,12 +443,7 @@ class NFLTDBoostCalculator:
     
     def calculate_league_averages(self):
         """Use hardcoded 2024 league averages instead of calculating them"""
-        self.league_averages = self.service_instance.league_averages_2024.copy() if self.service_instance else {
-            'rz_scoring': 59.0,
-            'rz_allow': 59.0, 
-            'all_drives_scoring': 23.3,
-            'all_drives_allow': 23.3
-        }
+        self.league_averages = self.service_instance.league_averages_2024.copy()
         print(f"Using hardcoded league averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
         print(f"All drives - Scoring: {self.league_averages['all_drives_scoring']}%, Allow: {self.league_averages['all_drives_allow']}%")
         
@@ -709,109 +704,66 @@ class NFLTDBoostCalculator:
         
         return results
     
-    def get_team_summary(self, team):
-        """Get a team's 2025 vs 2024 performance summary"""
-        if not self.baselines_2024 or not self.current_2025:
-            self.load_data()
-        
-        summary = {
-            'team': team,
-            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        # Offensive performance
-        offense = {}
-        if team in self.current_2025['offense_rz'] and team in self.baselines_2024['offense_rz']:
-            current_rz = self.current_2025['offense_rz'][team]['rz_td_rate']
-            baseline_rz = self.baselines_2024['offense_rz'][team]['rz_td_rate']
-            offense['rz_improvement'] = round(current_rz - baseline_rz, 1)
-            offense['rz_2025'] = current_rz
-            offense['rz_2024'] = baseline_rz
-        
-        if team in self.current_2025['offense_all'] and team in self.baselines_2024['offense_all']:
-            current_all = self.current_2025['offense_all'][team]['total_td_rate']
-            baseline_all = self.baselines_2024['offense_all'][team]['total_td_rate']
-            offense['all_drives_improvement'] = round(current_all - baseline_all, 1)
-            offense['all_drives_2025'] = current_all
-            offense['all_drives_2024'] = baseline_all
-        
-        summary['offense'] = offense
-        
-        # Defensive performance
-        defense = {}
-        if team in self.current_2025['defense_rz'] and team in self.baselines_2024['defense_rz']:
-            current_rz = self.current_2025['defense_rz'][team]['rz_td_allow_rate']
-            baseline_rz = self.baselines_2024['defense_rz'][team]['rz_td_allow_rate']
-            defense['rz_change'] = round(current_rz - baseline_rz, 1)
-            defense['rz_2025'] = current_rz
-            defense['rz_2024'] = baseline_rz
-        
-        if team in self.current_2025['defense_all'] and team in self.baselines_2024['defense_all']:
-            current_all = self.current_2025['defense_all'][team]['total_td_allow_rate']
-            baseline_all = self.baselines_2024['defense_all'][team]['total_td_allow_rate']
-            defense['all_drives_change'] = round(current_all - baseline_all, 1)
-            defense['all_drives_2025'] = current_all
-            defense['all_drives_2024'] = baseline_all
-        
-        summary['defense'] = defense
-        
-        return summary
-    
     def analyze_week_matchups(self, week_num=None):
         """Analyze all matchups for a specific week"""
-        if not self.baselines_2024 or not self.current_2025:
-            self.load_data()
-        
-        # Get current week matchups
-        matchups = self.get_week_matchups(week_num)
-        if not matchups:
-            return {"error": "No matchups found", "week": week_num or self.get_current_week()}
-        
-        results = {
-            'week': week_num or self.get_current_week(),
-            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'games': []
-        }
-        
-        print(f"Analyzing {len(matchups)} games for week {results['week']}...")
-        
-        for matchup in matchups:
-            away_team = matchup['away_team']
-            home_team = matchup['home_team']
+        try:
+            if not self.current_2025:
+                self.load_data()
             
-            try:
-                # Analyze away team offense vs home team defense
-                away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
+            # Get current week matchups
+            matchups = self.get_week_matchups(week_num)
+            if not matchups:
+                return {"error": "No matchups found", "week": week_num or self.get_current_week()}
+            
+            results = {
+                'week': week_num or self.get_current_week(),
+                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'games': []
+            }
+            
+            print(f"Analyzing {len(matchups)} games for week {results['week']}...")
+            
+            for matchup in matchups:
+                away_team = matchup['away_team']
+                home_team = matchup['home_team']
                 
-                # Analyze home team offense vs away team defense  
-                home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
-                
-                game_result = {
-                    'game': f"{away_team} @ {home_team}",
-                    'gameday': matchup['gameday'],
-                    'week': matchup['week'],
-                    'away_team': away_team,
-                    'home_team': home_team,
-                    'away_offense_vs_home_defense': away_offense_analysis,
-                    'home_offense_vs_away_defense': home_offense_analysis
-                }
-                
-                results['games'].append(game_result)
-                
-            except Exception as e:
-                print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
-                continue
-        
-        # Sort by highest total team advantages
-        def get_sort_key(game):
-            away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-            home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-            return max(away_adv or -999, home_adv or -999)
-        
-        results['games'].sort(key=get_sort_key, reverse=True)
-        
-        print(f"Week {results['week']} analysis complete!")
-        return results
+                try:
+                    # Analyze away team offense vs home team defense
+                    away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
+                    
+                    # Analyze home team offense vs away team defense  
+                    home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
+                    
+                    game_result = {
+                        'game': f"{away_team} @ {home_team}",
+                        'gameday': matchup['gameday'],
+                        'week': matchup['week'],
+                        'away_team': away_team,
+                        'home_team': home_team,
+                        'away_offense_vs_home_defense': away_offense_analysis,
+                        'home_offense_vs_away_defense': home_offense_analysis
+                    }
+                    
+                    results['games'].append(game_result)
+                    
+                except Exception as e:
+                    print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
+                    continue
+            
+            # Sort by highest total team advantages
+            def get_sort_key(game):
+                away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+                home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+                return max(away_adv or -999, home_adv or -999)
+            
+            results['games'].sort(key=get_sort_key, reverse=True)
+            
+            print(f"Week {results['week']} analysis complete!")
+            return results
+            
+        except Exception as e:
+            print(f"Error in analyze_week_matchups: {str(e)}")
+            return {"error": f"Matchup analysis failed: {str(e)}"}
 
 # Initialize the service
 team_service = TeamAnalysisService()
