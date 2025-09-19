@@ -600,13 +600,8 @@ class NFLTDBoostCalculator:
     def calculate_matchup_boosts(self, offense_team, defense_team):
         """Calculate TD boost for a specific matchup with percentage changes and detailed labels"""
         # FIXED: Only check current_2025, not baselines_2024
-        if not self.data_loaded or not self.current_2025:
-            try:
-                self.load_data()
-                self.data_loaded = True
-            except Exception as e:
-                print(f"Failed to load data in calculate_matchup_boosts: {str(e)}")
-                return {"error": "Could not load required data"}
+        if not self.current_2025:
+            self.load_data()
         
         results = {
             'matchup': f"{offense_team} vs {defense_team}",
@@ -727,13 +722,8 @@ class NFLTDBoostCalculator:
     def analyze_week_matchups(self, week_num=None):
         """Analyze all matchups for a specific week"""
         try:
-            # FIXED: Only check current_2025 and data_loaded
-            if not self.data_loaded or not self.current_2025:
-                try:
-                    self.load_data()
-                    self.data_loaded = True
-                except Exception as e:
-                    return {"error": f"Could not load data: {str(e)}"}
+            if not self.current_2025:
+                self.load_data()
             
             # Get current week matchups
             matchups = self.get_week_matchups(week_num)
