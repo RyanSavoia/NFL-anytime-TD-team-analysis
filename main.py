@@ -328,16 +328,6 @@ class NFLTDBoostCalculator:
         self.current_2025 = {}
         self.schedule_data = None
         self.league_averages = {}
-        self.data_loaded = False
-        
-        # Initialize data on startup
-        try:
-            self.load_data()
-            self.data_loaded = True
-            print("NFLTDBoostCalculator initialized successfully")
-        except Exception as e:
-            print(f"Failed to initialize NFLTDBoostCalculator: {str(e)}")
-            self.data_loaded = False
         
     def load_schedule(self):
         """Load NFL schedule data"""
