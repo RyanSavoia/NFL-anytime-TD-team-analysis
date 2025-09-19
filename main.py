@@ -321,10 +321,12 @@ class TeamAnalysisService:
             print(f"Error refreshing data: {str(e)}")
             raise
 
+# Copy your exact NFLTDBoostCalculator class here (keeping all logic unchanged)
 class NFLTDBoostCalculator:
     def __init__(self, service_instance=None):
         """Initialize the TD Boost Calculator with consistent methodology"""
         self.service_instance = service_instance
+        self.baselines_2024 = {}
         self.current_2025 = {}
         self.schedule_data = None
         self.league_averages = {}
@@ -476,12 +478,6 @@ class NFLTDBoostCalculator:
                 'defense_all': def_all_2025
             }
             
-            # Debug output to verify data was loaded
-            print(f"2025 data loaded successfully:")
-            print(f"  Offense RZ teams: {len(self.current_2025['offense_rz'])}")
-            print(f"  Defense RZ teams: {len(self.current_2025['defense_rz'])}")
-            print(f"  Sample offense data: {list(self.current_2025['offense_rz'].keys())[:5]}")
-            
             # Load schedule
             def load_sched():
                 return self.load_schedule()
@@ -589,7 +585,6 @@ class NFLTDBoostCalculator:
     
     def calculate_matchup_boosts(self, offense_team, defense_team):
         """Calculate TD boost for a specific matchup with percentage changes and detailed labels"""
-        # FIXED: Only check current_2025, not baselines_2024
         if not self.current_2025:
             self.load_data()
         
