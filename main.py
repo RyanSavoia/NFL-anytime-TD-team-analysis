@@ -259,13 +259,22 @@ class TeamAnalysisService:
                 
                 vegas_game = vegas_totals[game_key]
                 
-                # Get TD advantages (convert from percentage to decimal)
-                away_advantage_raw = game_data['away_offense_vs_home_defense']['combined_team_analysis'].get('total_team_td_advantage_pct', 0)
-                home_advantage_raw = game_data['home_offense_vs_away_defense']['combined_team_analysis'].get('total_team_td_advantage_pct', 0)
+                # **FIXED: Extract TD advantages with proper null handling**
+                away_analysis = game_data.get('away_offense_vs_home_defense', {}).get('combined_team_analysis', {})
+                home_analysis = game_data.get('home_offense_vs_away_defense', {}).get('combined_team_analysis', {})
                 
+                away_advantage_raw = away_analysis.get('total_team_td_advantage_pct')
+                home_advantage_raw = home_analysis.get('total_team_td_advantage_pct')
+                
+                # Debug logging
+                print(f"DEBUG {away_team}@{home_team}: away_adv={away_advantage_raw}, home_adv={home_advantage_raw}")
+                
+                # Handle None values properly
                 if away_advantage_raw is None:
+                    print(f"WARNING: No away advantage data for {away_team}")
                     away_advantage_raw = 0
                 if home_advantage_raw is None:
+                    print(f"WARNING: No home advantage data for {home_team}")
                     home_advantage_raw = 0
                 
                 # Convert to decimal and cap at ±30% (GPT's formula)
@@ -300,6 +309,12 @@ class TeamAnalysisService:
                         'w_edge': w_edge,
                         'away_calc': f"{vegas_game['away_vegas_tds']} * (1 + {w_edge} * {away_advantage_pct:.3f}) = {away_projected_tds:.2f}",
                         'home_calc': f"{vegas_game['home_vegas_tds']} * (1 + {w_edge} * {home_advantage_pct:.3f}) = {home_projected_tds:.2f}"
+                    },
+                    
+                    # **ADD DEBUG INFO**
+                    'debug': {
+                        'away_raw_analysis': away_analysis,
+                        'home_raw_analysis': home_analysis
                     }
                 }
                 
@@ -309,6 +324,8 @@ class TeamAnalysisService:
             
         except Exception as e:
             print(f"Error in get_team_analysis: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {"error": f"Analysis failed: {str(e)}"}
 
     def refresh_data(self):
@@ -321,7 +338,6 @@ class TeamAnalysisService:
             print(f"Error refreshing data: {str(e)}")
             raise
 
-# Copy your exact NFLTDBoostCalculator class here (keeping all logic unchanged)
 class NFLTDBoostCalculator:
     def __init__(self, service_instance=None):
         """Initialize the TD Boost Calculator with consistent methodology"""
@@ -393,6 +409,7 @@ class NFLTDBoostCalculator:
                             'rz_tds': tds,
                             'rz_td_rate': float(rate)
                         }
+                        print(f"  {team}: {drives} RZ drives, {tds} TDs, {rate}% rate")
                 except Exception as e:
                     print(f"Error calculating offensive RZ stats for {team}: {str(e)}")
                     continue
@@ -419,6 +436,7 @@ class NFLTDBoostCalculator:
                             'rz_tds_allowed': tds,
                             'rz_td_allow_rate': float(rate)
                         }
+                        print(f"  {team} DEF: {drives} RZ drives faced, {tds} TDs allowed, {rate}% rate")
                 except Exception as e:
                     print(f"Error calculating defensive RZ stats for {team}: {str(e)}")
                     continue
@@ -461,6 +479,7 @@ class NFLTDBoostCalculator:
             }, include_groups=False
         ).to_dict()
         
+        print(f"All drives stats: {len(offense_all)} offensive teams, {len(defense_all)} defensive teams")
         return offense_all, defense_all
     
     def calculate_league_averages(self):
@@ -489,9 +508,9 @@ class NFLTDBoostCalculator:
             
             df_2025 = timed_operation("2025 NFL data download", load_2025_data)
             
-            # Only proceed if we have data
+            # **FIXED: Ensure we actually have data**
             if df_2025.empty:
-                print("No 2025 data available, using empty datasets")
+                print("WARNING: No 2025 data available!")
                 self.current_2025 = {
                     'offense_rz': {},
                     'defense_rz': {},
@@ -499,19 +518,13 @@ class NFLTDBoostCalculator:
                     'defense_all': {}
                 }
             else:
+                print(f"2025 data loaded: {len(df_2025)} plays from weeks {df_2025['week'].min()} to {df_2025['week'].max()}")
+                
                 def calculate_rz_stats():
-                    try:
-                        return self.calculate_rz_stats_with_filter(df_2025, "2025")
-                    except Exception as e:
-                        print(f"Error calculating RZ stats: {str(e)}")
-                        return {}, {}
+                    return self.calculate_rz_stats_with_filter(df_2025, "2025")
                 
                 def calculate_all_drives():
-                    try:
-                        return self.calculate_all_drives_stats(df_2025, "2025")
-                    except Exception as e:
-                        print(f"Error calculating all drives stats: {str(e)}")
-                        return {}, {}
+                    return self.calculate_all_drives_stats(df_2025, "2025")
                 
                 off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
                 off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
@@ -522,19 +535,19 @@ class NFLTDBoostCalculator:
                     'offense_all': off_all_2025,
                     'defense_all': def_all_2025
                 }
+                
+                # **DEBUG: Print what teams we have data for**
+                print(f"Teams with 2025 RZ offense data: {list(off_rz_2025.keys())}")
+                print(f"Teams with 2025 RZ defense data: {list(def_rz_2025.keys())}")
             
             # Load schedule
             def load_sched():
-                try:
-                    return self.load_schedule()
-                except Exception as e:
-                    print(f"Error loading schedule: {str(e)}")
-                    return False
+                return self.load_schedule()
             
             timed_operation("Schedule data loading", load_sched)
             
             print(f"Total 2025 data loading completed in {time.time() - start_time:.2f} seconds")
-            print("Data loading complete (using hardcoded 2024 baselines)!")
+            print("Data loading complete!")
             
         except Exception as e:
             print(f"Error loading data: {str(e)}")
@@ -569,22 +582,6 @@ class NFLTDBoostCalculator:
                     
                     if not upcoming_games.empty:
                         next_week = upcoming_games['week'].iloc[0]
-                        
-                        # Additional logic: if it's Tuesday/Wednesday and we're between weeks,
-                        # check if we should use the upcoming week
-                        weekday = today.weekday()  # 0=Monday, 6=Sunday
-                        
-                        if weekday in [1, 2]:  # Tuesday or Wednesday
-                            # Check if there are any remaining games in the max completed week
-                            current_week_games = self.schedule_data[
-                                (self.schedule_data['week'] == max_completed_week + 1) &
-                                (self.schedule_data['gameday'].dt.date >= today)
-                            ]
-                            
-                            if current_week_games.empty:
-                                # No more games this week, move to next week
-                                next_week = max_completed_week + 2
-                        
                         print(f"Current week determined: {next_week} (max completed: {max_completed_week}, today: {today})")
                         return int(next_week)
                         
@@ -655,9 +652,11 @@ class NFLTDBoostCalculator:
             rz_analysis['offense_rz_pct_change_vs_league'] = round(pct_change, 1)
             rz_analysis['offense_2025_rz_td_rate'] = current_off_rz
             rz_analysis['league_2024_rz_scoring_avg'] = league_avg_rz_scoring
+            print(f"  {offense_team} RZ offense: {current_off_rz}% vs league {league_avg_rz_scoring}% = {pct_change:.1f}% change")
         else:
             rz_analysis['offense_rz_pct_change_vs_league'] = None
             rz_analysis['note'] = f"Insufficient {offense_team} RZ data"
+            print(f"  {offense_team}: No RZ offense data")
         
         # Defense RZ performance vs league average (percentage change)
         if defense_team in self.current_2025['defense_rz']:
@@ -667,8 +666,10 @@ class NFLTDBoostCalculator:
             rz_analysis['defense_rz_pct_change_vs_league'] = round(pct_change, 1)
             rz_analysis['defense_2025_rz_allow_rate'] = current_def_rz
             rz_analysis['league_2024_rz_allow_avg'] = league_avg_rz_allow
+            print(f"  {defense_team} RZ defense: {current_def_rz}% vs league {league_avg_rz_allow}% = {pct_change:.1f}% change")
         else:
             rz_analysis['defense_rz_pct_change_vs_league'] = None
+            print(f"  {defense_team}: No RZ defense data")
         
         results['red_zone'] = rz_analysis
         
@@ -683,8 +684,10 @@ class NFLTDBoostCalculator:
             all_drives_analysis['offense_all_drives_pct_change_vs_league'] = round(pct_change, 1)
             all_drives_analysis['offense_2025_all_drives_td_rate'] = current_off_all
             all_drives_analysis['league_2024_all_drives_scoring_avg'] = league_avg_all_scoring
+            print(f"  {offense_team} All drives: {current_off_all}% vs league {league_avg_all_scoring}% = {pct_change:.1f}% change")
         else:
             all_drives_analysis['offense_all_drives_pct_change_vs_league'] = None
+            print(f"  {offense_team}: No all drives offense data")
         
         # Defense all drives performance vs league average (percentage change)
         if defense_team in self.current_2025['defense_all']:
@@ -694,8 +697,10 @@ class NFLTDBoostCalculator:
             all_drives_analysis['defense_all_drives_pct_change_vs_league'] = round(pct_change, 1)
             all_drives_analysis['defense_2025_all_drives_allow_rate'] = current_def_all
             all_drives_analysis['league_2024_all_drives_allow_avg'] = league_avg_all_allow
+            print(f"  {defense_team} All drives defense: {current_def_all}% vs league {league_avg_all_allow}% = {pct_change:.1f}% change")
         else:
             all_drives_analysis['defense_all_drives_pct_change_vs_league'] = None
+            print(f"  {defense_team}: No all drives defense data")
         
         results['all_drives'] = all_drives_analysis
         
@@ -715,16 +720,17 @@ class NFLTDBoostCalculator:
         else:
             combined_analysis['offense_combined_pct_change'] = None
         
-        # Combined defense percentage change (average of RZ and all drives)
+        # Combined defense percentage change (average of RZ and all drives) 
+        # **FIXED: Defensive advantages should be INVERTED - worse defense helps offense**
         def_rz_pct = rz_analysis.get('defense_rz_pct_change_vs_league')
         def_all_pct = all_drives_analysis.get('defense_all_drives_pct_change_vs_league')
         
         if def_rz_pct is not None and def_all_pct is not None:
-            combined_analysis['defense_combined_pct_change'] = round((def_rz_pct + def_all_pct) / 2, 1)
+            combined_analysis['defense_combined_pct_change'] = round(-(def_rz_pct + def_all_pct) / 2, 1)  # INVERTED
         elif def_rz_pct is not None:
-            combined_analysis['defense_combined_pct_change'] = def_rz_pct
+            combined_analysis['defense_combined_pct_change'] = round(-def_rz_pct, 1)  # INVERTED
         elif def_all_pct is not None:
-            combined_analysis['defense_combined_pct_change'] = def_all_pct
+            combined_analysis['defense_combined_pct_change'] = round(-def_all_pct, 1)  # INVERTED
         else:
             combined_analysis['defense_combined_pct_change'] = None
         
@@ -739,14 +745,17 @@ class NFLTDBoostCalculator:
         elif def_combined is not None:
             combined_analysis['total_team_td_advantage_pct'] = round(def_combined / 2, 1)
         else:
-            combined_analysis['total_team_td_advantage_pct'] = None
+            combined_analysis['total_team_td_advantage_pct'] = 0  # **FIXED: Default to 0 instead of None**
+        
+        # **DEBUG LOGGING**
+        print(f"  FINAL: {offense_team} advantage = {combined_analysis.get('total_team_td_advantage_pct')}%")
         
         # Add explanations
         combined_analysis['explanation'] = {
             'offense_combined': f"Average of {offense_team} RZ and all-drives TD rate % change vs 2024 league averages",
-            'defense_combined': f"Average of {defense_team} RZ and all-drives TD allow rate % change vs 2024 league averages", 
+            'defense_combined': f"INVERTED average of {defense_team} RZ and all-drives TD allow rate % change (worse defense helps offense)", 
             'total_advantage': f"Overall team TD scoring advantage: average of offense boost and defense vulnerability",
-            'calculation_note': "All red zone stats use 2+ plays filter for consistency with industry standards"
+            'calculation_note': "All red zone stats use 2+ plays filter. Defense stats are inverted (higher allow rate = advantage for offense)."
         }
         
         results['combined_team_analysis'] = combined_analysis
@@ -762,15 +771,12 @@ class NFLTDBoostCalculator:
                 print("No current_2025 data, loading...")
                 self.load_data()
             
-            print("Getting week matchups...")
             # Get current week matchups
             matchups = self.get_week_matchups(week_num)
             if not matchups:
                 error_msg = f"No matchups found for week {week_num or self.get_current_week()}"
                 print(error_msg)
                 return {"error": error_msg, "week": week_num or self.get_current_week()}
-            
-            print(f"Found {len(matchups)} matchups")
             
             results = {
                 'week': week_num or self.get_current_week(),
@@ -785,14 +791,12 @@ class NFLTDBoostCalculator:
                 home_team = matchup['home_team']
                 
                 try:
-                    print(f"Analyzing game {i+1}/{len(matchups)}: {away_team} @ {home_team}")
+                    print(f"\nAnalyzing game {i+1}/{len(matchups)}: {away_team} @ {home_team}")
                     
                     # Analyze away team offense vs home team defense
-                    print(f"  - Analyzing {away_team} offense vs {home_team} defense")
                     away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
                     
                     # Analyze home team offense vs away team defense  
-                    print(f"  - Analyzing {home_team} offense vs {away_team} defense")
                     home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
                     
                     game_result = {
@@ -806,11 +810,10 @@ class NFLTDBoostCalculator:
                     }
                     
                     results['games'].append(game_result)
-                    print(f"  - Game {i+1} analysis complete")
+                    print(f"Game {i+1} analysis complete")
                     
                 except Exception as e:
                     print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
-                    print(f"Error type: {type(e).__name__}")
                     import traceback
                     traceback.print_exc()
                     continue
@@ -818,24 +821,11 @@ class NFLTDBoostCalculator:
             if not results['games']:
                 return {"error": "No games could be analyzed", "week": results['week']}
             
-            # Sort by highest total team advantages
-            def get_sort_key(game):
-                try:
-                    away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-                    home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-                    return max(away_adv or -999, home_adv or -999)
-                except Exception as e:
-                    print(f"Error in sort key: {str(e)}")
-                    return -999
-            
-            results['games'].sort(key=get_sort_key, reverse=True)
-            
             print(f"Week {results['week']} analysis complete!")
             return results
             
         except Exception as e:
             print(f"Error in analyze_week_matchups: {str(e)}")
-            print(f"Error type: {type(e).__name__}")
             import traceback
             traceback.print_exc()
             return {"error": f"Matchup analysis failed: {str(e)}"}
@@ -865,6 +855,8 @@ def get_team_analysis():
         return jsonify(results)
     except Exception as e:
         print(f"Error in team analysis endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/refresh', methods=['POST'])
