@@ -27,14 +27,6 @@ class TeamAnalysisService:
         """Combines Vegas team totals with TD boost calculations"""
         self.odds_api_key = odds_api_key
         
-        # Hardcoded 2024 league averages (never change, massive startup speed improvement)
-        self.league_averages_2024 = {
-            'rz_scoring': 59.0,
-            'rz_allow': 59.0, 
-            'all_drives_scoring': 23.3,
-            'all_drives_allow': 23.3
-        }
-        
         # Team name mapping: Full Name -> Abbreviation
         self.team_mapping = {
             "Arizona Cardinals": "ARI",
@@ -321,7 +313,7 @@ class TeamAnalysisService:
             print(f"Error refreshing data: {str(e)}")
             raise
 
-# Copy your exact NFLTDBoostCalculator class here (keeping all logic unchanged)
+# Updated NFLTDBoostCalculator class with LOCAL VERSION LOGIC
 class NFLTDBoostCalculator:
     def __init__(self, service_instance=None):
         """Initialize the TD Boost Calculator with consistent methodology"""
@@ -329,7 +321,6 @@ class NFLTDBoostCalculator:
         self.baselines_2024 = {}
         self.current_2025 = {}
         self.schedule_data = None
-        self.league_averages = {}
         
     def load_schedule(self):
         """Load NFL schedule data"""
@@ -442,114 +433,125 @@ class NFLTDBoostCalculator:
         return offense_all, defense_all
     
     def calculate_league_averages(self):
-        """Use hardcoded 2024 league averages instead of calculating them"""
-        self.league_averages = self.service_instance.league_averages_2024.copy()
-        print(f"Using hardcoded league averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
+        """Calculate 2024 league-wide averages for boost comparisons"""
+        print("Calculating 2024 league averages...")
+        df_2024 = nfl.import_pbp_data([2024])
+        reg_season = df_2024[df_2024['week'] <= 18]
+        
+        # Red Zone league averages (with 2+ plays filter)
+        rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
+        
+        # Filter to drives with 2+ plays for consistency
+        all_rz_drives = []
+        for game_id in rz_drives['game_id'].unique():
+            for team in rz_drives[rz_drives['game_id'] == game_id]['posteam'].unique():
+                if pd.isna(team):
+                    continue
+                team_rz = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['posteam'] == team)]
+                for drive_id in team_rz['fixed_drive'].unique():
+                    drive_plays = team_rz[team_rz['fixed_drive'] == drive_id]
+                    if len(drive_plays) >= 2:  # 2+ plays filter
+                        td_scored = drive_plays['touchdown'].max()
+                        all_rz_drives.append({'scored_td': td_scored, 'is_offense': True})
+                
+                # Same for defense
+                team_rz_def = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['defteam'] == team)]
+                for drive_id in team_rz_def['fixed_drive'].unique():
+                    drive_plays = team_rz_def[team_rz_def['fixed_drive'] == drive_id]
+                    if len(drive_plays) >= 2:  # 2+ plays filter
+                        td_allowed = drive_plays['touchdown'].max()
+                        all_rz_drives.append({'scored_td': td_allowed, 'is_offense': False})
+        
+        rz_df = pd.DataFrame(all_rz_drives)
+        
+        # Calculate averages
+        league_rz_scoring_avg = (rz_df[rz_df['is_offense']]['scored_td'].sum() / 
+                                len(rz_df[rz_df['is_offense']]) * 100) if len(rz_df[rz_df['is_offense']]) > 0 else 0
+        
+        league_rz_allow_avg = (rz_df[~rz_df['is_offense']]['scored_td'].sum() / 
+                              len(rz_df[~rz_df['is_offense']]) * 100) if len(rz_df[~rz_df['is_offense']]) > 0 else 0
+        
+        # All drives league averages
+        all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+        league_all_scoring_avg = (all_drives['touchdown'].sum() / len(all_drives) * 100)
+        
+        all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+        league_all_allow_avg = (all_drives_def['touchdown'].sum() / len(all_drives_def) * 100)
+        
+        self.league_averages = {
+            'rz_scoring': round(float(league_rz_scoring_avg), 1),
+            'rz_allow': round(float(league_rz_allow_avg), 1), 
+            'all_drives_scoring': round(float(league_all_scoring_avg), 1),
+            'all_drives_allow': round(float(league_all_allow_avg), 1)
+        }
+        
+        print(f"League averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
         print(f"All drives - Scoring: {self.league_averages['all_drives_scoring']}%, Allow: {self.league_averages['all_drives_allow']}%")
         
     def load_data(self):
-        """Load only 2025 current data - use hardcoded 2024 baselines"""
-        try:
-            # Use hardcoded league averages (no 2024 data loading needed)
-            self.calculate_league_averages()
-            
-            # Only load 2025 current data (much faster)
-            print("Loading 2025 current data...")
-            start_time = time.time()
-            
-            def load_2025_data():
-                return nfl.import_pbp_data([2025])
-            
-            df_2025 = timed_operation("2025 NFL data download", load_2025_data)
-            
-            def calculate_rz_stats():
-                return self.calculate_rz_stats_with_filter(df_2025, "2025")
-            
-            def calculate_all_drives():
-                return self.calculate_all_drives_stats(df_2025, "2025")
-            
-            off_rz_2025, def_rz_2025 = timed_operation("2025 RZ stats calculation", calculate_rz_stats)
-            off_all_2025, def_all_2025 = timed_operation("2025 all drives calculation", calculate_all_drives)
-            
-            self.current_2025 = {
-                'offense_rz': off_rz_2025,
-                'defense_rz': def_rz_2025,
-                'offense_all': off_all_2025,
-                'defense_all': def_all_2025
-            }
-            
-            # Load schedule
-            def load_sched():
-                return self.load_schedule()
-            
-            timed_operation("Schedule data loading", load_sched)
-            
-            print(f"Total 2025 data loading completed in {time.time() - start_time:.2f} seconds")
-            print("Data loading complete (using hardcoded 2024 baselines)!")
-            
-        except Exception as e:
-            print(f"Error loading data: {str(e)}")
-            raise
+        """Load both 2024 baseline and 2025 current data"""
+        # Calculate league averages first
+        self.calculate_league_averages()
+        
+        # Load 2024 baseline data
+        print("Loading 2024 baseline data...")
+        df_2024 = nfl.import_pbp_data([2024])
+        off_rz_2024, def_rz_2024 = self.calculate_rz_stats_with_filter(df_2024, "2024")
+        off_all_2024, def_all_2024 = self.calculate_all_drives_stats(df_2024, "2024")
+        
+        self.baselines_2024 = {
+            'offense_rz': off_rz_2024,
+            'defense_rz': def_rz_2024,
+            'offense_all': off_all_2024,
+            'defense_all': def_all_2024
+        }
+        
+        # Load 2025 current data
+        print("Loading 2025 current data...")
+        df_2025 = nfl.import_pbp_data([2025])
+        off_rz_2025, def_rz_2025 = self.calculate_rz_stats_with_filter(df_2025, "2025")
+        off_all_2025, def_all_2025 = self.calculate_all_drives_stats(df_2025, "2025")
+        
+        self.current_2025 = {
+            'offense_rz': off_rz_2025,
+            'defense_rz': def_rz_2025,
+            'offense_all': off_all_2025,
+            'defense_all': def_all_2025
+        }
+        
+        # Load schedule
+        self.load_schedule()
+        
+        print("Data loading complete!")
     
     def get_current_week(self):
         """Determine current NFL week based on date and available data"""
         try:
             # Get current play-by-play data to see what's been completed
-            try:
-                df_2025 = nfl.import_pbp_data([2025])
-                if not df_2025.empty:
-                    max_completed_week = df_2025['week'].max()
-                else:
-                    max_completed_week = 0
-            except Exception as e:
-                print(f"Error loading 2025 play-by-play data: {str(e)}")
+            df_2025 = nfl.import_pbp_data([2025])
+            if not df_2025.empty:
+                max_completed_week = df_2025['week'].max()
+            else:
                 max_completed_week = 0
             
             # Find the next upcoming games from schedule
             if self.schedule_data is not None:
-                try:
-                    # Use Eastern Time for NFL scheduling consistency
-                    from datetime import timezone, timedelta
-                    est = timezone(timedelta(hours=-5))  # EST offset
-                    today = datetime.now(est).date()
-                    
-                    # Look for games today or in the future
-                    upcoming_games = self.schedule_data[
-                        self.schedule_data['gameday'].dt.date >= today
-                    ].sort_values('gameday')
-                    
-                    if not upcoming_games.empty:
-                        next_week = upcoming_games['week'].iloc[0]
-                        
-                        # Additional logic: if it's Tuesday/Wednesday and we're between weeks,
-                        # check if we should use the upcoming week
-                        weekday = today.weekday()  # 0=Monday, 6=Sunday
-                        
-                        if weekday in [1, 2]:  # Tuesday or Wednesday
-                            # Check if there are any remaining games in the max completed week
-                            current_week_games = self.schedule_data[
-                                (self.schedule_data['week'] == max_completed_week + 1) &
-                                (self.schedule_data['gameday'].dt.date >= today)
-                            ]
-                            
-                            if current_week_games.empty:
-                                # No more games this week, move to next week
-                                next_week = max_completed_week + 2
-                        
-                        print(f"Current week determined: {next_week} (max completed: {max_completed_week}, today: {today})")
-                        return int(next_week)
-                        
-                except Exception as e:
-                    print(f"Error determining week from schedule: {str(e)}")
+                today = datetime.now().date()
+                future_games = self.schedule_data[
+                    self.schedule_data['gameday'].dt.date >= today
+                ].sort_values('gameday')
+                
+                if not future_games.empty:
+                    next_week = future_games['week'].iloc[0]
+                    print(f"Current week determined: {next_week} (max completed: {max_completed_week})")
+                    return int(next_week)
             
             # Fallback to max completed week + 1
-            fallback_week = int(max_completed_week) + 1
-            print(f"Using fallback week: {fallback_week} (max completed: {max_completed_week})")
-            return fallback_week
+            return int(max_completed_week) + 1
                 
         except Exception as e:
             print(f"Could not determine current week: {str(e)}")
-            return 3  # Conservative fallback
+            return 2  # Default fallback
     
     def get_week_matchups(self, week_num=None):
         """Get actual matchups for a specific week from schedule data"""
@@ -585,7 +587,7 @@ class NFLTDBoostCalculator:
     
     def calculate_matchup_boosts(self, offense_team, defense_team):
         """Calculate TD boost for a specific matchup with percentage changes and detailed labels"""
-        if not self.current_2025:
+        if not self.baselines_2024 or not self.current_2025:
             self.load_data()
         
         results = {
@@ -704,66 +706,109 @@ class NFLTDBoostCalculator:
         
         return results
     
+    def get_team_summary(self, team):
+        """Get a team's 2025 vs 2024 performance summary"""
+        if not self.baselines_2024 or not self.current_2025:
+            self.load_data()
+        
+        summary = {
+            'team': team,
+            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Offensive performance
+        offense = {}
+        if team in self.current_2025['offense_rz'] and team in self.baselines_2024['offense_rz']:
+            current_rz = self.current_2025['offense_rz'][team]['rz_td_rate']
+            baseline_rz = self.baselines_2024['offense_rz'][team]['rz_td_rate']
+            offense['rz_improvement'] = round(current_rz - baseline_rz, 1)
+            offense['rz_2025'] = current_rz
+            offense['rz_2024'] = baseline_rz
+        
+        if team in self.current_2025['offense_all'] and team in self.baselines_2024['offense_all']:
+            current_all = self.current_2025['offense_all'][team]['total_td_rate']
+            baseline_all = self.baselines_2024['offense_all'][team]['total_td_rate']
+            offense['all_drives_improvement'] = round(current_all - baseline_all, 1)
+            offense['all_drives_2025'] = current_all
+            offense['all_drives_2024'] = baseline_all
+        
+        summary['offense'] = offense
+        
+        # Defensive performance
+        defense = {}
+        if team in self.current_2025['defense_rz'] and team in self.baselines_2024['defense_rz']:
+            current_rz = self.current_2025['defense_rz'][team]['rz_td_allow_rate']
+            baseline_rz = self.baselines_2024['defense_rz'][team]['rz_td_allow_rate']
+            defense['rz_change'] = round(current_rz - baseline_rz, 1)
+            defense['rz_2025'] = current_rz
+            defense['rz_2024'] = baseline_rz
+        
+        if team in self.current_2025['defense_all'] and team in self.baselines_2024['defense_all']:
+            current_all = self.current_2025['defense_all'][team]['total_td_allow_rate']
+            baseline_all = self.baselines_2024['defense_all'][team]['total_td_allow_rate']
+            defense['all_drives_change'] = round(current_all - baseline_all, 1)
+            defense['all_drives_2025'] = current_all
+            defense['all_drives_2024'] = baseline_all
+        
+        summary['defense'] = defense
+        
+        return summary
+    
     def analyze_week_matchups(self, week_num=None):
         """Analyze all matchups for a specific week"""
-        try:
-            if not self.current_2025:
-                self.load_data()
+        if not self.baselines_2024 or not self.current_2025:
+            self.load_data()
+        
+        # Get current week matchups
+        matchups = self.get_week_matchups(week_num)
+        if not matchups:
+            return {"error": "No matchups found", "week": week_num or self.get_current_week()}
+        
+        results = {
+            'week': week_num or self.get_current_week(),
+            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'games': []
+        }
+        
+        print(f"Analyzing {len(matchups)} games for week {results['week']}...")
+        
+        for matchup in matchups:
+            away_team = matchup['away_team']
+            home_team = matchup['home_team']
             
-            # Get current week matchups
-            matchups = self.get_week_matchups(week_num)
-            if not matchups:
-                return {"error": "No matchups found", "week": week_num or self.get_current_week()}
-            
-            results = {
-                'week': week_num or self.get_current_week(),
-                'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'games': []
-            }
-            
-            print(f"Analyzing {len(matchups)} games for week {results['week']}...")
-            
-            for matchup in matchups:
-                away_team = matchup['away_team']
-                home_team = matchup['home_team']
+            try:
+                # Analyze away team offense vs home team defense
+                away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
                 
-                try:
-                    # Analyze away team offense vs home team defense
-                    away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
-                    
-                    # Analyze home team offense vs away team defense  
-                    home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
-                    
-                    game_result = {
-                        'game': f"{away_team} @ {home_team}",
-                        'gameday': matchup['gameday'],
-                        'week': matchup['week'],
-                        'away_team': away_team,
-                        'home_team': home_team,
-                        'away_offense_vs_home_defense': away_offense_analysis,
-                        'home_offense_vs_away_defense': home_offense_analysis
-                    }
-                    
-                    results['games'].append(game_result)
-                    
-                except Exception as e:
-                    print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
-                    continue
-            
-            # Sort by highest total team advantages
-            def get_sort_key(game):
-                away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-                home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-                return max(away_adv or -999, home_adv or -999)
-            
-            results['games'].sort(key=get_sort_key, reverse=True)
-            
-            print(f"Week {results['week']} analysis complete!")
-            return results
-            
-        except Exception as e:
-            print(f"Error in analyze_week_matchups: {str(e)}")
-            return {"error": f"Matchup analysis failed: {str(e)}"}
+                # Analyze home team offense vs away team defense  
+                home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
+                
+                game_result = {
+                    'game': f"{away_team} @ {home_team}",
+                    'gameday': matchup['gameday'],
+                    'week': matchup['week'],
+                    'away_team': away_team,
+                    'home_team': home_team,
+                    'away_offense_vs_home_defense': away_offense_analysis,
+                    'home_offense_vs_away_defense': home_offense_analysis
+                }
+                
+                results['games'].append(game_result)
+                
+            except Exception as e:
+                print(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
+                continue
+        
+        # Sort by highest total team advantages
+        def get_sort_key(game):
+            away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+            home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
+            return max(away_adv or -999, home_adv or -999)
+        
+        results['games'].sort(key=get_sort_key, reverse=True)
+        
+        print(f"Week {results['week']} analysis complete!")
+        return results
 
 # Initialize the service
 team_service = TeamAnalysisService()
