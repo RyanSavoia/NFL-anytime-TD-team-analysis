@@ -314,7 +314,7 @@ class TeamAnalysisService:
             raise
 
 # =========================
-# NFLTDBoostCalculator (Railway) with LOCAL CALC LOGIC
+# NFLTDBoostCalculator (Railway) with LOCAL CALC LOGIC - FIXED VERSION
 # =========================
 class NFLTDBoostCalculator:
     def __init__(self, service_instance=None):
@@ -402,7 +402,7 @@ class NFLTDBoostCalculator:
         return offense_results, defense_results
 
     def calculate_all_drives_stats(self, df, year_label=""):
-        """Calculate all drives TD stats"""
+        """Calculate all drives TD stats - FIXED VERSION without include_groups"""
         print(f"Calculating {year_label} all drives stats...")
 
         # Filter for regular season only
@@ -413,23 +413,23 @@ class NFLTDBoostCalculator:
 
         all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
 
-        # Offensive stats
+        # Offensive stats - FIXED: removed include_groups=False
         offense_all = all_drives.groupby('posteam').apply(
             lambda x: {
                 'total_drives': len(x),
                 'total_tds': float(x['touchdown'].sum()),
                 'total_td_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
-            }, include_groups=False
+            }
         ).to_dict()
 
-        # Defensive stats
+        # Defensive stats - FIXED: removed include_groups=False
         all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
         defense_all = all_drives_def.groupby('defteam').apply(
             lambda x: {
                 'total_drives_faced': len(x),
                 'total_tds_allowed': float(x['touchdown'].sum()),
                 'total_td_allow_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
-            }, include_groups=False
+            }
         ).to_dict()
 
         return offense_all, defense_all
