@@ -12,14 +12,15 @@ logger = logging.getLogger(__name__)
 
 class NFLTDBoostCalculator:
     def __init__(self):
-        """Initialize the TD Boost Calculator with consistent methodology"""
+        """Initialize the TD Boost Calculator - load data lazily"""
         self.baselines_2024 = {}
         self.current_2025 = {}
         self.schedule_data = None
+        self.league_averages = {}
         self.data_loaded = False
         
         try:
-            self.load_data()
+            self.load_schedule()
             self.data_loaded = True
             logger.info("Successfully initialized TD Boost Calculator")
         except Exception as e:
@@ -38,12 +39,10 @@ class NFLTDBoostCalculator:
             # Convert game_id to ensure proper formatting
             self.schedule_data['gameday'] = pd.to_datetime(self.schedule_data['gameday'])
             logger.info(f"Schedule loaded: {len(self.schedule_data)} games")
-            return True
             
         except Exception as e:
             logger.error(f"Failed to load schedule: {str(e)}")
-            self.schedule_data = None
-            return False
+            raise
         
     def calculate_rz_stats_with_filter(self, df, year_label=""):
         """Calculate red zone stats with 2+ plays filter for consistent methodology"""
@@ -136,107 +135,119 @@ class NFLTDBoostCalculator:
         
         return offense_all, defense_all
     
-    def calculate_league_averages(self):
-        """Calculate 2024 league-wide averages for boost comparisons"""
-        logger.info("Calculating 2024 league averages...")
-        df_2024 = nfl.import_pbp_data([2024])
-        reg_season = df_2024[df_2024['week'] <= 18]
-        
-        # Red Zone league averages (with 2+ plays filter)
-        rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
-        
-        # Filter to drives with 2+ plays for consistency
-        all_rz_drives = []
-        for game_id in rz_drives['game_id'].unique():
-            for team in rz_drives[rz_drives['game_id'] == game_id]['posteam'].unique():
-                if pd.isna(team):
-                    continue
-                team_rz = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['posteam'] == team)]
-                for drive_id in team_rz['fixed_drive'].unique():
-                    drive_plays = team_rz[team_rz['fixed_drive'] == drive_id]
-                    if len(drive_plays) >= 2:  # 2+ plays filter
-                        td_scored = drive_plays['touchdown'].max()
-                        all_rz_drives.append({'scored_td': td_scored, 'is_offense': True})
+    def load_baselines(self):
+        """Load league baselines and data - called lazily when needed"""
+        if self.baselines_2024:  # Already loaded
+            return
+            
+        try:
+            logger.info("Loading 2024 baseline data...")
+            df_2024 = nfl.import_pbp_data([2024])
+            
+            if df_2024.empty:
+                raise ValueError("No baseline data available for 2024")
+            
+            # Calculate league averages from 2024 data
+            reg_season = df_2024[df_2024['week'] <= 18]
+            
+            # Red Zone league averages (with 2+ plays filter)
+            rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
+            
+            # Filter to drives with 2+ plays for consistency
+            all_rz_drives = []
+            for game_id in rz_drives['game_id'].unique():
+                for team in rz_drives[rz_drives['game_id'] == game_id]['posteam'].unique():
+                    if pd.isna(team):
+                        continue
+                    team_rz = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['posteam'] == team)]
+                    for drive_id in team_rz['fixed_drive'].unique():
+                        drive_plays = team_rz[team_rz['fixed_drive'] == drive_id]
+                        if len(drive_plays) >= 2:  # 2+ plays filter
+                            td_scored = drive_plays['touchdown'].max()
+                            all_rz_drives.append({'scored_td': td_scored, 'is_offense': True})
+                    
+                    # Same for defense
+                    team_rz_def = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['defteam'] == team)]
+                    for drive_id in team_rz_def['fixed_drive'].unique():
+                        drive_plays = team_rz_def[team_rz_def['fixed_drive'] == drive_id]
+                        if len(drive_plays) >= 2:  # 2+ plays filter
+                            td_allowed = drive_plays['touchdown'].max()
+                            all_rz_drives.append({'scored_td': td_allowed, 'is_offense': False})
+            
+            rz_df = pd.DataFrame(all_rz_drives)
+            
+            # Calculate averages
+            league_rz_scoring_avg = (rz_df[rz_df['is_offense']]['scored_td'].sum() / 
+                                    len(rz_df[rz_df['is_offense']]) * 100) if len(rz_df[rz_df['is_offense']]) > 0 else 0
+            
+            league_rz_allow_avg = (rz_df[~rz_df['is_offense']]['scored_td'].sum() / 
+                                  len(rz_df[~rz_df['is_offense']]) * 100) if len(rz_df[~rz_df['is_offense']]) > 0 else 0
+            
+            # All drives league averages
+            all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+            league_all_scoring_avg = (all_drives['touchdown'].sum() / len(all_drives) * 100)
+            
+            all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
+            league_all_allow_avg = (all_drives_def['touchdown'].sum() / len(all_drives_def) * 100)
+            
+            self.league_averages = {
+                'rz_scoring': round(float(league_rz_scoring_avg), 1),
+                'rz_allow': round(float(league_rz_allow_avg), 1), 
+                'all_drives_scoring': round(float(league_all_scoring_avg), 1),
+                'all_drives_allow': round(float(league_all_allow_avg), 1)
+            }
+            
+            # Load baseline team stats
+            off_rz_2024, def_rz_2024 = self.calculate_rz_stats_with_filter(df_2024, "2024")
+            off_all_2024, def_all_2024 = self.calculate_all_drives_stats(df_2024, "2024")
+            
+            self.baselines_2024 = {
+                'offense_rz': off_rz_2024,
+                'defense_rz': def_rz_2024,
+                'offense_all': off_all_2024,
+                'defense_all': def_all_2024
+            }
+            
+            logger.info("Baselines loaded successfully from 2024 season")
+            
+            # Load 2025 current data
+            logger.info("Loading 2025 current data...")
+            df_2025 = nfl.import_pbp_data([2025])
+            
+            if df_2025.empty:
+                logger.warning("No 2025 data available yet")
+                self.current_2025 = {
+                    'offense_rz': {},
+                    'defense_rz': {},
+                    'offense_all': {},
+                    'defense_all': {}
+                }
+            else:
+                off_rz_2025, def_rz_2025 = self.calculate_rz_stats_with_filter(df_2025, "2025")
+                off_all_2025, def_all_2025 = self.calculate_all_drives_stats(df_2025, "2025")
                 
-                # Same for defense
-                team_rz_def = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['defteam'] == team)]
-                for drive_id in team_rz_def['fixed_drive'].unique():
-                    drive_plays = team_rz_def[team_rz_def['fixed_drive'] == drive_id]
-                    if len(drive_plays) >= 2:  # 2+ plays filter
-                        td_allowed = drive_plays['touchdown'].max()
-                        all_rz_drives.append({'scored_td': td_allowed, 'is_offense': False})
-        
-        rz_df = pd.DataFrame(all_rz_drives)
-        
-        # Calculate averages
-        league_rz_scoring_avg = (rz_df[rz_df['is_offense']]['scored_td'].sum() / 
-                                len(rz_df[rz_df['is_offense']]) * 100) if len(rz_df[rz_df['is_offense']]) > 0 else 0
-        
-        league_rz_allow_avg = (rz_df[~rz_df['is_offense']]['scored_td'].sum() / 
-                              len(rz_df[~rz_df['is_offense']]) * 100) if len(rz_df[~rz_df['is_offense']]) > 0 else 0
-        
-        # All drives league averages
-        all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-        league_all_scoring_avg = (all_drives['touchdown'].sum() / len(all_drives) * 100)
-        
-        all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-        league_all_allow_avg = (all_drives_def['touchdown'].sum() / len(all_drives_def) * 100)
-        
-        self.league_averages = {
-            'rz_scoring': round(float(league_rz_scoring_avg), 1),
-            'rz_allow': round(float(league_rz_allow_avg), 1), 
-            'all_drives_scoring': round(float(league_all_scoring_avg), 1),
-            'all_drives_allow': round(float(league_all_allow_avg), 1)
-        }
-        
-        logger.info(f"League averages - RZ scoring: {self.league_averages['rz_scoring']}%, RZ allow: {self.league_averages['rz_allow']}%")
-        logger.info(f"All drives - Scoring: {self.league_averages['all_drives_scoring']}%, Allow: {self.league_averages['all_drives_allow']}%")
-        
-    def load_data(self):
-        """Load both 2024 baseline and 2025 current data"""
-        # Calculate league averages first
-        self.calculate_league_averages()
-        
-        # Load 2024 baseline data
-        logger.info("Loading 2024 baseline data...")
-        df_2024 = nfl.import_pbp_data([2024])
-        off_rz_2024, def_rz_2024 = self.calculate_rz_stats_with_filter(df_2024, "2024")
-        off_all_2024, def_all_2024 = self.calculate_all_drives_stats(df_2024, "2024")
-        
-        self.baselines_2024 = {
-            'offense_rz': off_rz_2024,
-            'defense_rz': def_rz_2024,
-            'offense_all': off_all_2024,
-            'defense_all': def_all_2024
-        }
-        
-        # Load 2025 current data
-        logger.info("Loading 2025 current data...")
-        df_2025 = nfl.import_pbp_data([2025])
-        off_rz_2025, def_rz_2025 = self.calculate_rz_stats_with_filter(df_2025, "2025")
-        off_all_2025, def_all_2025 = self.calculate_all_drives_stats(df_2025, "2025")
-        
-        self.current_2025 = {
-            'offense_rz': off_rz_2025,
-            'defense_rz': def_rz_2025,
-            'offense_all': off_all_2025,
-            'defense_all': def_all_2025
-        }
-        
-        # Load schedule
-        self.load_schedule()
-        
-        logger.info("Data loading complete!")
+                self.current_2025 = {
+                    'offense_rz': off_rz_2025,
+                    'defense_rz': def_rz_2025,
+                    'offense_all': off_all_2025,
+                    'defense_all': def_all_2025
+                }
+                
+            logger.info("Data loading complete!")
+            
+        except Exception as e:
+            logger.error(f"Failed to load baselines: {str(e)}")
+            raise
     
     def get_current_week(self):
         """Determine current NFL week based on date and available data"""
         try:
-            # Get current play-by-play data to see what's been completed
-            df_2025 = nfl.import_pbp_data([2025])
-            if not df_2025.empty:
-                max_completed_week = df_2025['week'].max()
+            # Get max week from any available 2025 data
+            if self.current_2025 and any(self.current_2025.values()):
+                # Try to determine from existing data
+                max_completed_week = 1
             else:
-                max_completed_week = 0
+                max_completed_week = 1
             
             # Find the next upcoming games from schedule
             if self.schedule_data is not None:
@@ -260,10 +271,6 @@ class NFLTDBoostCalculator:
     def get_week_matchups(self, week_num=None):
         """Get actual matchups for a specific week from schedule data"""
         try:
-            if self.schedule_data is None:
-                if not self.load_schedule():
-                    return []
-            
             if week_num is None:
                 week_num = self.get_current_week()
             
@@ -395,14 +402,6 @@ class NFLTDBoostCalculator:
         else:
             combined_analysis['total_team_td_advantage_pct'] = None
         
-        # Add explanations
-        combined_analysis['explanation'] = {
-            'offense_combined': f"Average of {offense_team} RZ and all-drives TD rate % change vs 2024 league averages",
-            'defense_combined': f"Average of {defense_team} RZ and all-drives TD allow rate % change vs 2024 league averages", 
-            'total_advantage': f"Overall team TD scoring advantage: average of offense boost and defense vulnerability",
-            'calculation_note': "All red zone stats use 2+ plays filter for consistency with industry standards"
-        }
-        
         results['combined_team_analysis'] = combined_analysis
         
         return results
@@ -413,18 +412,22 @@ class NFLTDBoostCalculator:
             logger.error("Calculator not properly initialized")
             return []
         
+        # Load baselines if not already loaded
+        if not self.baselines_2024:
+            try:
+                self.load_baselines()
+            except Exception as e:
+                logger.error(f"Failed to load baselines: {str(e)}")
+                return {"error": "Could not load data", "week": week_num or self.get_current_week()}
+        
         # Get current week matchups
         matchups = self.get_week_matchups(week_num)
         if not matchups:
             return {"error": "No matchups found", "week": week_num or self.get_current_week()}
         
-        results = {
-            'week': week_num or self.get_current_week(),
-            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'games': []
-        }
+        results = []
         
-        logger.info(f"Analyzing {len(matchups)} games for week {results['week']}...")
+        logger.info(f"Analyzing {len(matchups)} games for week {week_num or 'current'}...")
         
         for matchup in matchups:
             away_team = matchup['away_team']
@@ -447,7 +450,7 @@ class NFLTDBoostCalculator:
                     'home_offense_vs_away_defense': home_offense_analysis
                 }
                 
-                results['games'].append(game_result)
+                results.append(game_result)
                 
             except Exception as e:
                 logger.warning(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
@@ -459,9 +462,9 @@ class NFLTDBoostCalculator:
             home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
             return max(away_adv or -999, home_adv or -999)
         
-        results['games'].sort(key=get_sort_key, reverse=True)
+        results.sort(key=get_sort_key, reverse=True)
         
-        logger.info(f"Week {results['week']} analysis complete!")
+        logger.info(f"Successfully analyzed {len(results)} games")
         return results
     
     def generate_json_output(self, results, include_metadata=True):
@@ -471,7 +474,7 @@ class NFLTDBoostCalculator:
                 "games": results,
                 "metadata": {
                     "generated_at": datetime.now().isoformat(),
-                    "total_games": len(results.get('games', [])) if isinstance(results, dict) else len(results),
+                    "total_games": len(results),
                     "data_loaded": self.data_loaded,
                     "disclaimer": "For educational analysis only. Small sample sizes in early season may produce unreliable results. Past performance does not guarantee future results."
                 } if include_metadata else None
@@ -536,8 +539,8 @@ def main():
     print(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", file=sys.stderr)
     print("="*50, file=sys.stderr)
     
-    if isinstance(results, dict) and 'games' in results:
-        for game in results['games'][:5]:  # Top 5 games
+    if isinstance(results, list) and len(results) > 0:
+        for game in results[:5]:  # Top 5 games
             print(f"\n{game['game']} ({game['gameday']})", file=sys.stderr)
             
             away_adv = game['away_offense_vs_home_defense']['combined_team_analysis'].get('total_team_td_advantage_pct')
@@ -821,16 +824,6 @@ try:
             }
         }
 
-        @media (max-width: 480px) {
-            .component-card {
-                padding: 1.5rem;
-            }
-            
-            .component-title {
-                font-size: 2rem;
-            }
-        }
-
         @keyframes fadeInUp {
             from {
                 opacity: 0;
@@ -922,18 +915,12 @@ try:
             function displayData(data) {
                 const contentEl = document.getElementById('content');
                 
-                if (!data.games || (!data.games.games && !data.games.length)) {
+                if (!data.games || data.games.length === 0) {
                     contentEl.innerHTML = '<div class="error-state">No game analysis available</div>';
                     return;
                 }
                 
-                // Handle both response formats
-                const games = data.games.games || data.games;
-                
-                if (!games || games.length === 0) {
-                    contentEl.innerHTML = '<div class="error-state">No games found for analysis</div>';
-                    return;
-                }
+                const games = data.games;
                 
                 const gamesHtml = games.map(game => `
                     <div class="component-card animate">
@@ -1010,11 +997,11 @@ try:
                     </div>
                 `).join('');
                 
-                const metadataHtml = data.metadata || data.games.metadata ? `
+                const metadataHtml = data.metadata ? `
                     <div class="metadata-section animate">
-                        <p><strong>Analysis Generated:</strong> ${new Date((data.metadata || data.games.metadata).generated_at).toLocaleString()}</p>
-                        <p style="margin-top: 1rem;"><strong>Games Analyzed:</strong> ${(data.metadata || data.games.metadata).total_games}</p>
-                        <p style="margin-top: 1rem; font-size: 0.75rem; font-style: italic; color: #9ca3af;">${(data.metadata || data.games.metadata).disclaimer}</p>
+                        <p><strong>Analysis Generated:</strong> ${new Date(data.metadata.generated_at).toLocaleString()}</p>
+                        <p style="margin-top: 1rem;"><strong>Games Analyzed:</strong> ${data.metadata.total_games}</p>
+                        <p style="margin-top: 1rem; font-size: 0.75rem; font-style: italic; color: #9ca3af;">${data.metadata.disclaimer}</p>
                     </div>
                 ` : '';
                 
@@ -1022,13 +1009,6 @@ try:
                     <div class="component-grid">${gamesHtml}</div>
                     ${metadataHtml}
                 `;
-                
-                // Add staggered animation
-                setTimeout(() => {
-                    document.querySelectorAll('.animate').forEach((el, index) => {
-                        el.style.animationDelay = `${index * 0.2}s`;
-                    });
-                }, 100);
             }
             
             // Make loadData globally available
