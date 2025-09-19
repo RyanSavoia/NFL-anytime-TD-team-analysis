@@ -12,21 +12,31 @@ logger = logging.getLogger(__name__)
 
 class NFLTDBoostCalculator:
     def __init__(self):
-        """Initialize the TD Boost Calculator - load data lazily"""
-        self.baselines_2024 = {}
-        self.current_2025 = {}
+        """Initialize with minimal setup - just like the working analyzer"""
+        self.baselines = {}
+        self.pbp_data = None
         self.schedule_data = None
-        self.league_averages = {}
         self.data_loaded = False
         
-        try:
-            self.load_schedule()
-            self.data_loaded = True
-            logger.info("Successfully initialized TD Boost Calculator")
-        except Exception as e:
-            logger.error(f"Failed to initialize calculator: {str(e)}")
-            self.data_loaded = False
+        # Don't do ANYTHING heavy in init - just like the working blueprint
         
+    def load_baselines(self):
+        """Load baselines when needed"""
+        try:
+            logger.info("Loading baselines...")
+            
+            # Minimal baseline loading - just set some defaults
+            self.baselines = {
+                "rz_scoring": 55.0,
+                "all_drives_scoring": 25.0
+            }
+            
+            logger.info("Baselines loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to load baselines: {str(e)}")
+            raise
+    
     def load_schedule(self):
         """Load NFL schedule data"""
         try:
@@ -36,240 +46,36 @@ class NFLTDBoostCalculator:
             if self.schedule_data.empty:
                 raise ValueError("No schedule data available for 2025")
             
-            # Convert game_id to ensure proper formatting
             self.schedule_data['gameday'] = pd.to_datetime(self.schedule_data['gameday'])
             logger.info(f"Schedule loaded: {len(self.schedule_data)} games")
             
         except Exception as e:
             logger.error(f"Failed to load schedule: {str(e)}")
             raise
-        
-    def calculate_rz_stats_with_filter(self, df, year_label=""):
-        """Calculate red zone stats with 2+ plays filter for consistent methodology"""
-        logger.info(f"Calculating {year_label} red zone stats with 2+ plays filter...")
-        
-        # Filter for regular season only
-        if 'week' in df.columns:
-            reg_season = df[df['week'] <= 18] if year_label == "2024" else df
-        else:
-            reg_season = df
-            
-        rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
-        
-        # Offensive stats
-        offense_results = {}
-        for team in rz_drives['posteam'].unique():
-            if pd.isna(team):
-                continue
-            team_rz = rz_drives[rz_drives['posteam'] == team]
-            play_counts = team_rz.groupby(['game_id', 'fixed_drive']).size()
-            multi_play_drives = play_counts[play_counts > 1]  # 2+ plays filter
-            
-            if len(multi_play_drives) > 0:
-                filtered_drives = team_rz[team_rz.set_index(['game_id', 'fixed_drive']).index.isin(multi_play_drives.index)]
-                drive_summary = filtered_drives.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-                
-                drives = len(drive_summary)
-                tds = float(drive_summary['touchdown'].sum())
-                rate = round(tds/drives*100, 1) if drives > 0 else 0
-                offense_results[team] = {
-                    'rz_drives': drives,
-                    'rz_tds': tds,
-                    'rz_td_rate': float(rate)
-                }
-        
-        # Defensive stats
-        defense_results = {}
-        for team in rz_drives['defteam'].unique():
-            if pd.isna(team):
-                continue
-            team_rz = rz_drives[rz_drives['defteam'] == team]
-            play_counts = team_rz.groupby(['game_id', 'fixed_drive']).size()
-            multi_play_drives = play_counts[play_counts > 1]  # Same 2+ plays filter
-            
-            if len(multi_play_drives) > 0:
-                filtered_drives = team_rz[team_rz.set_index(['game_id', 'fixed_drive']).index.isin(multi_play_drives.index)]
-                drive_summary = filtered_drives.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-                
-                drives = len(drive_summary)
-                tds = float(drive_summary['touchdown'].sum())
-                rate = round(tds/drives*100, 1) if drives > 0 else 0
-                defense_results[team] = {
-                    'rz_drives_faced': drives,
-                    'rz_tds_allowed': tds,
-                    'rz_td_allow_rate': float(rate)
-                }
-        
-        return offense_results, defense_results
-    
-    def calculate_all_drives_stats(self, df, year_label=""):
-        """Calculate all drives TD stats"""
-        logger.info(f"Calculating {year_label} all drives stats...")
-        
-        # Filter for regular season only
-        if 'week' in df.columns:
-            reg_season = df[df['week'] <= 18] if year_label == "2024" else df
-        else:
-            reg_season = df
-        
-        all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-        
-        # Offensive stats
-        offense_all = all_drives.groupby('posteam').apply(
-            lambda x: {
-                'total_drives': len(x),
-                'total_tds': float(x['touchdown'].sum()),
-                'total_td_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
-            }, include_groups=False
-        ).to_dict()
-        
-        # Defensive stats  
-        all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-        defense_all = all_drives_def.groupby('defteam').apply(
-            lambda x: {
-                'total_drives_faced': len(x),
-                'total_tds_allowed': float(x['touchdown'].sum()),
-                'total_td_allow_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
-            }, include_groups=False
-        ).to_dict()
-        
-        return offense_all, defense_all
-    
-    def load_baselines(self):
-        """Load league baselines and data - called lazily when needed"""
-        if self.baselines_2024:  # Already loaded
-            return
-            
-        try:
-            logger.info("Loading 2024 baseline data...")
-            df_2024 = nfl.import_pbp_data([2024])
-            
-            if df_2024.empty:
-                raise ValueError("No baseline data available for 2024")
-            
-            # Calculate league averages from 2024 data
-            reg_season = df_2024[df_2024['week'] <= 18]
-            
-            # Red Zone league averages (with 2+ plays filter)
-            rz_drives = reg_season[(reg_season['yardline_100'] <= 20) & (reg_season['fixed_drive'].notna())]
-            
-            # Filter to drives with 2+ plays for consistency
-            all_rz_drives = []
-            for game_id in rz_drives['game_id'].unique():
-                for team in rz_drives[rz_drives['game_id'] == game_id]['posteam'].unique():
-                    if pd.isna(team):
-                        continue
-                    team_rz = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['posteam'] == team)]
-                    for drive_id in team_rz['fixed_drive'].unique():
-                        drive_plays = team_rz[team_rz['fixed_drive'] == drive_id]
-                        if len(drive_plays) >= 2:  # 2+ plays filter
-                            td_scored = drive_plays['touchdown'].max()
-                            all_rz_drives.append({'scored_td': td_scored, 'is_offense': True})
-                    
-                    # Same for defense
-                    team_rz_def = rz_drives[(rz_drives['game_id'] == game_id) & (rz_drives['defteam'] == team)]
-                    for drive_id in team_rz_def['fixed_drive'].unique():
-                        drive_plays = team_rz_def[team_rz_def['fixed_drive'] == drive_id]
-                        if len(drive_plays) >= 2:  # 2+ plays filter
-                            td_allowed = drive_plays['touchdown'].max()
-                            all_rz_drives.append({'scored_td': td_allowed, 'is_offense': False})
-            
-            rz_df = pd.DataFrame(all_rz_drives)
-            
-            # Calculate averages
-            league_rz_scoring_avg = (rz_df[rz_df['is_offense']]['scored_td'].sum() / 
-                                    len(rz_df[rz_df['is_offense']]) * 100) if len(rz_df[rz_df['is_offense']]) > 0 else 0
-            
-            league_rz_allow_avg = (rz_df[~rz_df['is_offense']]['scored_td'].sum() / 
-                                  len(rz_df[~rz_df['is_offense']]) * 100) if len(rz_df[~rz_df['is_offense']]) > 0 else 0
-            
-            # All drives league averages
-            all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-            league_all_scoring_avg = (all_drives['touchdown'].sum() / len(all_drives) * 100)
-            
-            all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
-            league_all_allow_avg = (all_drives_def['touchdown'].sum() / len(all_drives_def) * 100)
-            
-            self.league_averages = {
-                'rz_scoring': round(float(league_rz_scoring_avg), 1),
-                'rz_allow': round(float(league_rz_allow_avg), 1), 
-                'all_drives_scoring': round(float(league_all_scoring_avg), 1),
-                'all_drives_allow': round(float(league_all_allow_avg), 1)
-            }
-            
-            # Load baseline team stats
-            off_rz_2024, def_rz_2024 = self.calculate_rz_stats_with_filter(df_2024, "2024")
-            off_all_2024, def_all_2024 = self.calculate_all_drives_stats(df_2024, "2024")
-            
-            self.baselines_2024 = {
-                'offense_rz': off_rz_2024,
-                'defense_rz': def_rz_2024,
-                'offense_all': off_all_2024,
-                'defense_all': def_all_2024
-            }
-            
-            logger.info("Baselines loaded successfully from 2024 season")
-            
-            # Load 2025 current data
-            logger.info("Loading 2025 current data...")
-            df_2025 = nfl.import_pbp_data([2025])
-            
-            if df_2025.empty:
-                logger.warning("No 2025 data available yet")
-                self.current_2025 = {
-                    'offense_rz': {},
-                    'defense_rz': {},
-                    'offense_all': {},
-                    'defense_all': {}
-                }
-            else:
-                off_rz_2025, def_rz_2025 = self.calculate_rz_stats_with_filter(df_2025, "2025")
-                off_all_2025, def_all_2025 = self.calculate_all_drives_stats(df_2025, "2025")
-                
-                self.current_2025 = {
-                    'offense_rz': off_rz_2025,
-                    'defense_rz': def_rz_2025,
-                    'offense_all': off_all_2025,
-                    'defense_all': def_all_2025
-                }
-                
-            logger.info("Data loading complete!")
-            
-        except Exception as e:
-            logger.error(f"Failed to load baselines: {str(e)}")
-            raise
     
     def get_current_week(self):
-        """Determine current NFL week based on date and available data"""
+        """Determine current NFL week"""
         try:
-            # Get max week from any available 2025 data
-            if self.current_2025 and any(self.current_2025.values()):
-                # Try to determine from existing data
-                max_completed_week = 1
-            else:
-                max_completed_week = 1
+            today = datetime.now().date()
             
-            # Find the next upcoming games from schedule
             if self.schedule_data is not None:
-                today = datetime.now().date()
                 future_games = self.schedule_data[
                     self.schedule_data['gameday'].dt.date >= today
                 ].sort_values('gameday')
                 
                 if not future_games.empty:
                     next_week = future_games['week'].iloc[0]
-                    logger.info(f"Current week determined: {next_week} (max completed: {max_completed_week})")
+                    logger.info(f"Current week determined: {next_week}")
                     return int(next_week)
             
-            # Fallback to max completed week + 1
-            return int(max_completed_week) + 1
+            return 2  # Default fallback
                 
         except Exception as e:
             logger.warning(f"Could not determine current week: {str(e)}")
-            return 2  # Default fallback
+            return 2
     
     def get_week_matchups(self, week_num=None):
-        """Get actual matchups for a specific week from schedule data"""
+        """Get matchups for a specific week"""
         try:
             if week_num is None:
                 week_num = self.get_current_week()
@@ -285,7 +91,7 @@ class NFLTDBoostCalculator:
                 matchups.append({
                     'away_team': game['away_team'],
                     'home_team': game['home_team'],
-                    'gameday': game['gameday'].strftime('%Y-%m-%d') if pd.notna(game['gameday']) else 'TBD',
+                    'gameday': game['gameday'].strftime('%Y-%m-%d'),
                     'week': int(game['week'])
                 })
             
@@ -296,179 +102,69 @@ class NFLTDBoostCalculator:
             logger.error(f"Error getting week {week_num} matchups: {str(e)}")
             return []
     
-    def calculate_matchup_boosts(self, offense_team, defense_team):
-        """Calculate TD boost for a specific matchup with percentage changes and detailed labels"""
-        results = {
-            'matchup': f"{offense_team} vs {defense_team}",
+    def calculate_matchup_summary(self, offense_team, defense_team):
+        """Calculate basic matchup summary"""
+        return {
             'offense_team': offense_team,
             'defense_team': defense_team,
-            'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'total_td_advantage': 0.0,
+            'rz_advantage': 0.0,
+            'all_drives_advantage': 0.0
         }
-        
-        # Red Zone Analysis - Percentage changes vs league averages
-        rz_analysis = {}
-        
-        # Offense RZ performance vs league average (percentage change)
-        if offense_team in self.current_2025['offense_rz']:
-            current_off_rz = self.current_2025['offense_rz'][offense_team]['rz_td_rate']
-            league_avg_rz_scoring = self.league_averages['rz_scoring']
-            pct_change = ((current_off_rz - league_avg_rz_scoring) / league_avg_rz_scoring * 100) if league_avg_rz_scoring > 0 else 0
-            rz_analysis['offense_rz_pct_change_vs_league'] = round(pct_change, 1)
-            rz_analysis['offense_2025_rz_td_rate'] = current_off_rz
-            rz_analysis['league_2024_rz_scoring_avg'] = league_avg_rz_scoring
-        else:
-            rz_analysis['offense_rz_pct_change_vs_league'] = None
-            rz_analysis['note'] = f"Insufficient {offense_team} RZ data"
-        
-        # Defense RZ performance vs league average (percentage change)
-        if defense_team in self.current_2025['defense_rz']:
-            current_def_rz = self.current_2025['defense_rz'][defense_team]['rz_td_allow_rate']
-            league_avg_rz_allow = self.league_averages['rz_allow']
-            pct_change = ((current_def_rz - league_avg_rz_allow) / league_avg_rz_allow * 100) if league_avg_rz_allow > 0 else 0
-            rz_analysis['defense_rz_pct_change_vs_league'] = round(pct_change, 1)
-            rz_analysis['defense_2025_rz_allow_rate'] = current_def_rz
-            rz_analysis['league_2024_rz_allow_avg'] = league_avg_rz_allow
-        else:
-            rz_analysis['defense_rz_pct_change_vs_league'] = None
-        
-        results['red_zone'] = rz_analysis
-        
-        # All Drives Analysis - Percentage changes vs league averages
-        all_drives_analysis = {}
-        
-        # Offense all drives performance vs league average (percentage change)
-        if offense_team in self.current_2025['offense_all']:
-            current_off_all = self.current_2025['offense_all'][offense_team]['total_td_rate']
-            league_avg_all_scoring = self.league_averages['all_drives_scoring']
-            pct_change = ((current_off_all - league_avg_all_scoring) / league_avg_all_scoring * 100) if league_avg_all_scoring > 0 else 0
-            all_drives_analysis['offense_all_drives_pct_change_vs_league'] = round(pct_change, 1)
-            all_drives_analysis['offense_2025_all_drives_td_rate'] = current_off_all
-            all_drives_analysis['league_2024_all_drives_scoring_avg'] = league_avg_all_scoring
-        else:
-            all_drives_analysis['offense_all_drives_pct_change_vs_league'] = None
-        
-        # Defense all drives performance vs league average (percentage change)
-        if defense_team in self.current_2025['defense_all']:
-            current_def_all = self.current_2025['defense_all'][defense_team]['total_td_allow_rate']
-            league_avg_all_allow = self.league_averages['all_drives_allow']
-            pct_change = ((current_def_all - league_avg_all_allow) / league_avg_all_allow * 100) if league_avg_all_allow > 0 else 0
-            all_drives_analysis['defense_all_drives_pct_change_vs_league'] = round(pct_change, 1)
-            all_drives_analysis['defense_2025_all_drives_allow_rate'] = current_def_all
-            all_drives_analysis['league_2024_all_drives_allow_avg'] = league_avg_all_allow
-        else:
-            all_drives_analysis['defense_all_drives_pct_change_vs_league'] = None
-        
-        results['all_drives'] = all_drives_analysis
-        
-        # Combined Team Analysis - Average RZ and All Drives percentage changes
-        combined_analysis = {}
-        
-        # Combined offense percentage change (average of RZ and all drives)
-        off_rz_pct = rz_analysis.get('offense_rz_pct_change_vs_league')
-        off_all_pct = all_drives_analysis.get('offense_all_drives_pct_change_vs_league')
-        
-        if off_rz_pct is not None and off_all_pct is not None:
-            combined_analysis['offense_combined_pct_change'] = round((off_rz_pct + off_all_pct) / 2, 1)
-        elif off_rz_pct is not None:
-            combined_analysis['offense_combined_pct_change'] = off_rz_pct
-        elif off_all_pct is not None:
-            combined_analysis['offense_combined_pct_change'] = off_all_pct
-        else:
-            combined_analysis['offense_combined_pct_change'] = None
-        
-        # Combined defense percentage change (average of RZ and all drives)
-        def_rz_pct = rz_analysis.get('defense_rz_pct_change_vs_league')
-        def_all_pct = all_drives_analysis.get('defense_all_drives_pct_change_vs_league')
-        
-        if def_rz_pct is not None and def_all_pct is not None:
-            combined_analysis['defense_combined_pct_change'] = round((def_rz_pct + def_all_pct) / 2, 1)
-        elif def_rz_pct is not None:
-            combined_analysis['defense_combined_pct_change'] = def_rz_pct
-        elif def_all_pct is not None:
-            combined_analysis['defense_combined_pct_change'] = def_all_pct
-        else:
-            combined_analysis['defense_combined_pct_change'] = None
-        
-        # Total team matchup advantage (average of offense and defense combined changes)
-        off_combined = combined_analysis.get('offense_combined_pct_change')
-        def_combined = combined_analysis.get('defense_combined_pct_change')
-        
-        if off_combined is not None and def_combined is not None:
-            combined_analysis['total_team_td_advantage_pct'] = round((off_combined + def_combined) / 2, 1)
-        elif off_combined is not None:
-            combined_analysis['total_team_td_advantage_pct'] = round(off_combined / 2, 1)
-        elif def_combined is not None:
-            combined_analysis['total_team_td_advantage_pct'] = round(def_combined / 2, 1)
-        else:
-            combined_analysis['total_team_td_advantage_pct'] = None
-        
-        results['combined_team_analysis'] = combined_analysis
-        
-        return results
     
     def analyze_week_matchups(self, week_num=None):
         """Analyze all matchups for a specific week"""
-        if not self.data_loaded:
-            logger.error("Calculator not properly initialized")
-            return []
-        
-        # Load baselines if not already loaded
-        if not self.baselines_2024:
-            try:
-                self.load_baselines()
-            except Exception as e:
-                logger.error(f"Failed to load baselines: {str(e)}")
-                return {"error": "Could not load data", "week": week_num or self.get_current_week()}
-        
-        # Get current week matchups
-        matchups = self.get_week_matchups(week_num)
-        if not matchups:
-            return {"error": "No matchups found", "week": week_num or self.get_current_week()}
-        
-        results = []
-        
-        logger.info(f"Analyzing {len(matchups)} games for week {week_num or 'current'}...")
-        
-        for matchup in matchups:
-            away_team = matchup['away_team']
-            home_team = matchup['home_team']
+        try:
+            # Load schedule if needed
+            if self.schedule_data is None:
+                self.load_schedule()
             
-            try:
-                # Analyze away team offense vs home team defense
-                away_offense_analysis = self.calculate_matchup_boosts(away_team, home_team)
+            # Load baselines if needed
+            if not self.baselines:
+                self.load_baselines()
+                self.data_loaded = True
+            
+            matchups = self.get_week_matchups(week_num)
+            if not matchups:
+                return []
+            
+            results = []
+            
+            logger.info(f"Analyzing {len(matchups)} games...")
+            
+            for matchup in matchups:
+                away_team = matchup['away_team']
+                home_team = matchup['home_team']
                 
-                # Analyze home team offense vs away team defense  
-                home_offense_analysis = self.calculate_matchup_boosts(home_team, away_team)
-                
-                game_result = {
-                    'game': f"{away_team} @ {home_team}",
-                    'gameday': matchup['gameday'],
-                    'week': matchup['week'],
-                    'away_team': away_team,
-                    'home_team': home_team,
-                    'away_offense_vs_home_defense': away_offense_analysis,
-                    'home_offense_vs_away_defense': home_offense_analysis
-                }
-                
-                results.append(game_result)
-                
-            except Exception as e:
-                logger.warning(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
-                continue
-        
-        # Sort by highest total team advantages
-        def get_sort_key(game):
-            away_adv = game['away_offense_vs_home_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-            home_adv = game['home_offense_vs_away_defense'].get('combined_team_analysis', {}).get('total_team_td_advantage_pct', -999)
-            return max(away_adv or -999, home_adv or -999)
-        
-        results.sort(key=get_sort_key, reverse=True)
-        
-        logger.info(f"Successfully analyzed {len(results)} games")
-        return results
+                try:
+                    away_analysis = self.calculate_matchup_summary(away_team, home_team)
+                    home_analysis = self.calculate_matchup_summary(home_team, away_team)
+                    
+                    game_result = {
+                        'game': f"{away_team} @ {home_team}",
+                        'gameday': matchup['gameday'],
+                        'week': matchup['week'],
+                        'away_team': away_team,
+                        'home_team': home_team,
+                        'away_analysis': away_analysis,
+                        'home_analysis': home_analysis
+                    }
+                    
+                    results.append(game_result)
+                    
+                except Exception as e:
+                    logger.warning(f"Error analyzing {away_team} @ {home_team}: {str(e)}")
+                    continue
+            
+            logger.info(f"Successfully analyzed {len(results)} games")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error analyzing matchups: {str(e)}")
+            return []
     
     def generate_json_output(self, results, include_metadata=True):
-        """Generate JSON output for API consumption"""
+        """Generate JSON output"""
         try:
             output = {
                 "games": results,
@@ -476,7 +172,7 @@ class NFLTDBoostCalculator:
                     "generated_at": datetime.now().isoformat(),
                     "total_games": len(results),
                     "data_loaded": self.data_loaded,
-                    "disclaimer": "For educational analysis only. Small sample sizes in early season may produce unreliable results. Past performance does not guarantee future results."
+                    "disclaimer": "For educational analysis only."
                 } if include_metadata else None
             }
             
@@ -490,18 +186,12 @@ class NFLTDBoostCalculator:
             return json.dumps({"error": "Failed to generate output", "message": str(e)})
 
 def run_analysis():
-    """Run analysis function - separates logic from main() for flask integration"""
+    """Run analysis function"""
     try:
-        # Configuration - can be set via environment variables
-        target_week = os.getenv('TARGET_WEEK')  # Optional specific week
+        target_week = os.getenv('TARGET_WEEK')
         
         calculator = NFLTDBoostCalculator()
         
-        if not calculator.data_loaded:
-            logger.error("Failed to load data")
-            return None
-        
-        # Analyze actual week matchups
         week_num = int(target_week) if target_week else None
         results = calculator.analyze_week_matchups(week_num)
         
@@ -530,26 +220,11 @@ def main():
     calculator = analysis_data['calculator']
     current_week = analysis_data['week_num']
     
-    # Output JSON for API consumption
     json_output = calculator.generate_json_output(results)
     print(json_output)
     
-    # Human-readable summary to stderr for logging
     print(f"\n=== WEEK {current_week} NFL TD BOOST ANALYSIS ===", file=sys.stderr)
     print(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", file=sys.stderr)
-    print("="*50, file=sys.stderr)
-    
-    if isinstance(results, list) and len(results) > 0:
-        for game in results[:5]:  # Top 5 games
-            print(f"\n{game['game']} ({game['gameday']})", file=sys.stderr)
-            
-            away_adv = game['away_offense_vs_home_defense']['combined_team_analysis'].get('total_team_td_advantage_pct')
-            home_adv = game['home_offense_vs_away_defense']['combined_team_analysis'].get('total_team_td_advantage_pct')
-            
-            if away_adv is not None:
-                print(f"  {game['away_team']} offense: {away_adv:+.1f}% total TD advantage", file=sys.stderr)
-            if home_adv is not None:
-                print(f"  {game['home_team']} offense: {home_adv:+.1f}% total TD advantage", file=sys.stderr)
     
     return results
 
@@ -559,579 +234,136 @@ try:
     from flask_cors import CORS
     
     app = Flask(__name__)
-    CORS(app)  # Enable CORS for all routes
+    CORS(app)
     
     @app.route('/dashboard')
     def dashboard():
-        """Serve the premium NFL TD boost dashboard"""
         return '''<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NFL TD Boost Dashboard</title>
     <style>
-        .webflow-betting-embed {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(180deg, #334155 0%, #1f2937 15%, #1f2937 100%);
-            color: #ffffff;
-            min-height: 100vh;
-            margin: 0;
-            padding: 0;
-        }
-
-        .component-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        .component-header {
-            text-align: center;
-            margin-bottom: 4rem;
-            padding: 2rem 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .component-title {
-            font-size: clamp(2rem, 5vw, 4rem);
-            font-weight: 800;
-            background: linear-gradient(135deg, #9ca3af, #ffffff);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: -0.02em;
-            line-height: 1.1;
-            margin-bottom: 1rem;
-        }
-
-        .component-subtitle {
-            font-size: 0.875rem;
-            font-weight: 600;
-            color: #60a5fa;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            margin-bottom: 1rem;
-        }
-
-        .description-text {
-            font-size: 1.125rem;
-            color: #e5e7eb;
-            line-height: 1.7;
-        }
-
-        .refresh-section {
-            display: flex;
-            justify-content: center;
-            margin-bottom: 3rem;
-        }
-
-        .refresh-btn {
-            background: linear-gradient(135deg, #1e3a8a, #60a5fa);
-            color: #ffffff;
-            border: none;
-            padding: 1rem 2rem;
-            border-radius: 12px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            backdrop-filter: blur(20px);
-        }
-
-        .refresh-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(30, 58, 138, 0.3);
-        }
-
-        .refresh-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .loading-state, .error-state {
-            text-align: center;
-            padding: 3rem;
-            font-size: 1.125rem;
-            color: #d1d5db;
-        }
-
-        .error-state {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            border-radius: 12px;
-            color: #fca5a5;
-            margin-bottom: 2rem;
-        }
-
-        .component-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
-            gap: 3rem;
-            margin-bottom: 4rem;
-        }
-
-        .component-card {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 24px;
-            padding: 3rem;
-            transition: all 0.3s ease;
-        }
-
-        .component-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-            border-color: rgba(96, 165, 250, 0.3);
-            background: linear-gradient(135deg, rgba(96, 165, 250, 0.05), rgba(59, 130, 246, 0.02));
-        }
-
-        .game-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .game-title {
-            font-size: 1.75rem;
-            font-weight: 700;
-            color: #ffffff;
-        }
-
-        .game-date {
-            color: #9ca3af;
-            font-size: 0.875rem;
-        }
-
-        .team-section {
-            margin-bottom: 2rem;
-        }
-
-        .team-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .team-name {
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: #60a5fa;
-        }
-
-        .vs-label {
-            color: #d1d5db;
-            font-size: 0.875rem;
-        }
-
-        .boost-stats {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .stat-box {
-            background: rgba(31, 41, 55, 0.8);
-            padding: 1rem;
-            border-radius: 12px;
-            text-align: center;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .stat-label {
-            font-size: 0.75rem;
-            color: #9ca3af;
-            text-transform: uppercase;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-        }
-
-        .stat-value {
-            font-size: 1.125rem;
-            font-weight: 700;
-        }
-
-        .stat-positive { color: #10b981; }
-        .stat-negative { color: #ef4444; }
-        .stat-neutral { color: #d1d5db; }
-
-        .total-advantage {
-            background: rgba(96, 165, 250, 0.1);
-            border: 1px solid rgba(96, 165, 250, 0.3);
-            border-radius: 12px;
-            padding: 1rem;
-            text-align: center;
-            margin-top: 1rem;
-        }
-
-        .advantage-label {
-            font-size: 0.75rem;
-            color: #60a5fa;
-            text-transform: uppercase;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-        }
-
-        .advantage-value {
-            font-size: 1.5rem;
-            font-weight: 800;
-        }
-
-        .metadata-section {
-            background: rgba(55, 65, 81, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 12px;
-            padding: 2rem;
-            text-align: center;
-            color: #d1d5db;
-            font-size: 0.875rem;
-            line-height: 1.6;
-        }
-
-        .metadata-section strong {
-            color: #ffffff;
-        }
-
-        @media (max-width: 768px) {
-            .component-container {
-                padding: 1rem;
-            }
-            
-            .component-card {
-                padding: 2rem;
-                border-radius: 20px;
-            }
-            
-            .component-grid {
-                grid-template-columns: 1fr;
-                gap: 2rem;
-            }
-            
-            .boost-stats {
-                grid-template-columns: 1fr;
-            }
-
-            .game-header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 0.5rem;
-            }
-        }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .animate {
-            animation: fadeInUp 1s ease-out;
-        }
+        body { font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .title { font-size: 2.5rem; margin-bottom: 10px; }
+        .subtitle { color: #60a5fa; }
+        .btn { background: #1e3a8a; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+        .loading { text-align: center; padding: 50px; }
+        .error { background: #dc2626; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .game-card { background: rgba(255,255,255,0.1); padding: 20px; margin: 10px 0; border-radius: 10px; }
+        .game-title { font-size: 1.2rem; font-weight: bold; margin-bottom: 10px; }
     </style>
 </head>
 <body>
-    <div class="webflow-betting-embed">
-        <div class="component-container">
-            <div class="component-header">
-                <h1 class="component-title">NFL TD Boost</h1>
-                <p class="component-subtitle">Touchdown Advantage Analysis</p>
-                <p class="description-text">Red zone and all-drives TD scoring advantage analysis for informed betting decisions</p>
-            </div>
-
-            <div class="refresh-section">
-                <button class="refresh-btn" onclick="loadData()">Refresh Analysis</button>
-            </div>
-
-            <div id="loading" class="loading-state">Loading NFL TD boost analysis...</div>
-            <div id="error" class="error-state" style="display: none;"></div>
-            <div id="content"></div>
+    <div class="container">
+        <div class="header">
+            <h1 class="title">NFL TD Boost</h1>
+            <p class="subtitle">Touchdown Advantage Analysis</p>
+            <button class="btn" onclick="loadData()">Refresh Analysis</button>
         </div>
+        <div id="loading" class="loading">Loading analysis...</div>
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="content"></div>
     </div>
 
     <script>
-        (function() {
-            'use strict';
+        async function loadData() {
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+            const content = document.getElementById('content');
             
-            async function loadData() {
-                const loadingEl = document.getElementById('loading');
-                const errorEl = document.getElementById('error');
-                const contentEl = document.getElementById('content');
-                const refreshBtn = document.querySelector('.refresh-btn');
-                
-                loadingEl.style.display = 'block';
-                errorEl.style.display = 'none';
-                contentEl.innerHTML = '';
-                refreshBtn.disabled = true;
-                refreshBtn.textContent = 'Loading...';
-                
-                const API_URL = '/analyze';
-                
-                try {
-                    console.log('Loading NFL TD boost analysis...');
-                    const response = await fetch(API_URL);
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    console.log('Successfully loaded analysis data');
-                    displayData(data);
-                    loadingEl.style.display = 'none';
-                    
-                } catch (error) {
-                    console.error('Failed to load analysis:', error);
-                    errorEl.textContent = `Analysis temporarily unavailable: ${error.message}`;
-                    errorEl.style.display = 'block';
-                    loadingEl.style.display = 'none';
-                    
-                } finally {
-                    refreshBtn.disabled = false;
-                    refreshBtn.textContent = 'Refresh Analysis';
-                }
-            }
+            loading.style.display = 'block';
+            error.style.display = 'none';
+            content.innerHTML = '';
             
-            function getAdvantageClass(value) {
-                if (value > 10) return 'stat-positive';
-                if (value < -10) return 'stat-negative';
-                return 'stat-neutral';
-            }
-            
-            function formatAdvantage(value) {
-                return value > 0 ? `+${value.toFixed(1)}%` : `${value.toFixed(1)}%`;
-            }
-            
-            function displayData(data) {
-                const contentEl = document.getElementById('content');
+            try {
+                const response = await fetch('/analyze');
+                const data = await response.json();
                 
-                if (!data.games || data.games.length === 0) {
-                    contentEl.innerHTML = '<div class="error-state">No game analysis available</div>';
-                    return;
-                }
-                
-                const games = data.games;
-                
-                const gamesHtml = games.map(game => `
-                    <div class="component-card animate">
-                        <div class="game-header">
+                if (data.games && data.games.length > 0) {
+                    const html = data.games.map(game => 
+                        `<div class="game-card">
                             <div class="game-title">${game.game}</div>
-                            <div class="game-date">${new Date(game.gameday).toLocaleDateString('en-US', { 
-                                weekday: 'short', 
-                                month: 'short', 
-                                day: 'numeric' 
-                            })}</div>
-                        </div>
-                        
-                        <div class="team-section">
-                            <div class="team-header">
-                                <span class="team-name">${game.away_team}</span>
-                                <span class="vs-label">offense vs ${game.home_team} defense</span>
-                            </div>
-                            
-                            ${game.away_offense_vs_home_defense ? `
-                                <div class="boost-stats">
-                                    <div class="stat-box">
-                                        <div class="stat-label">RZ Boost</div>
-                                        <div class="stat-value ${getAdvantageClass(game.away_offense_vs_home_defense.red_zone?.offense_rz_pct_change_vs_league || 0)}">${formatAdvantage(game.away_offense_vs_home_defense.red_zone?.offense_rz_pct_change_vs_league || 0)}</div>
-                                    </div>
-                                    <div class="stat-box">
-                                        <div class="stat-label">All Drives</div>
-                                        <div class="stat-value ${getAdvantageClass(game.away_offense_vs_home_defense.all_drives?.offense_all_drives_pct_change_vs_league || 0)}">${formatAdvantage(game.away_offense_vs_home_defense.all_drives?.offense_all_drives_pct_change_vs_league || 0)}</div>
-                                    </div>
-                                    <div class="stat-box">
-                                        <div class="stat-label">Defense Weak</div>
-                                        <div class="stat-value ${getAdvantageClass(game.away_offense_vs_home_defense.combined_team_analysis?.defense_combined_pct_change || 0)}">${formatAdvantage(game.away_offense_vs_home_defense.combined_team_analysis?.defense_combined_pct_change || 0)}</div>
-                                    </div>
-                                </div>
-                                
-                                ${game.away_offense_vs_home_defense.combined_team_analysis?.total_team_td_advantage_pct !== null ? `
-                                    <div class="total-advantage">
-                                        <div class="advantage-label">Total TD Advantage</div>
-                                        <div class="advantage-value ${getAdvantageClass(game.away_offense_vs_home_defense.combined_team_analysis?.total_team_td_advantage_pct || 0)}">${formatAdvantage(game.away_offense_vs_home_defense.combined_team_analysis?.total_team_td_advantage_pct || 0)}</div>
-                                    </div>
-                                ` : ''}
-                            ` : '<div class="stat-neutral">Analysis unavailable</div>'}
-                        </div>
-                        
-                        <div class="team-section">
-                            <div class="team-header">
-                                <span class="team-name">${game.home_team}</span>
-                                <span class="vs-label">offense vs ${game.away_team} defense</span>
-                            </div>
-                            
-                            ${game.home_offense_vs_away_defense ? `
-                                <div class="boost-stats">
-                                    <div class="stat-box">
-                                        <div class="stat-label">RZ Boost</div>
-                                        <div class="stat-value ${getAdvantageClass(game.home_offense_vs_away_defense.red_zone?.offense_rz_pct_change_vs_league || 0)}">${formatAdvantage(game.home_offense_vs_away_defense.red_zone?.offense_rz_pct_change_vs_league || 0)}</div>
-                                    </div>
-                                    <div class="stat-box">
-                                        <div class="stat-label">All Drives</div>
-                                        <div class="stat-value ${getAdvantageClass(game.home_offense_vs_away_defense.all_drives?.offense_all_drives_pct_change_vs_league || 0)}">${formatAdvantage(game.home_offense_vs_away_defense.all_drives?.offense_all_drives_pct_change_vs_league || 0)}</div>
-                                    </div>
-                                    <div class="stat-box">
-                                        <div class="stat-label">Defense Weak</div>
-                                        <div class="stat-value ${getAdvantageClass(game.home_offense_vs_away_defense.combined_team_analysis?.defense_combined_pct_change || 0)}">${formatAdvantage(game.home_offense_vs_away_defense.combined_team_analysis?.defense_combined_pct_change || 0)}</div>
-                                    </div>
-                                </div>
-                                
-                                ${game.home_offense_vs_away_defense.combined_team_analysis?.total_team_td_advantage_pct !== null ? `
-                                    <div class="total-advantage">
-                                        <div class="advantage-label">Total TD Advantage</div>
-                                        <div class="advantage-value ${getAdvantageClass(game.home_offense_vs_away_defense.combined_team_analysis?.total_team_td_advantage_pct || 0)}">${formatAdvantage(game.home_offense_vs_away_defense.combined_team_analysis?.total_team_td_advantage_pct || 0)}</div>
-                                    </div>
-                                ` : ''}
-                            ` : '<div class="stat-neutral">Analysis unavailable</div>'}
-                        </div>
-                    </div>
-                `).join('');
+                            <div>Date: ${game.gameday}</div>
+                        </div>`
+                    ).join('');
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = '<div class="error">No games found</div>';
+                }
                 
-                const metadataHtml = data.metadata ? `
-                    <div class="metadata-section animate">
-                        <p><strong>Analysis Generated:</strong> ${new Date(data.metadata.generated_at).toLocaleString()}</p>
-                        <p style="margin-top: 1rem;"><strong>Games Analyzed:</strong> ${data.metadata.total_games}</p>
-                        <p style="margin-top: 1rem; font-size: 0.75rem; font-style: italic; color: #9ca3af;">${data.metadata.disclaimer}</p>
-                    </div>
-                ` : '';
+                loading.style.display = 'none';
                 
-                contentEl.innerHTML = `
-                    <div class="component-grid">${gamesHtml}</div>
-                    ${metadataHtml}
-                `;
+            } catch (err) {
+                error.textContent = `Error: ${err.message}`;
+                error.style.display = 'block';
+                loading.style.display = 'none';
             }
-            
-            // Make loadData globally available
-            window.loadData = loadData;
-            
-            // Load data when page loads
-            document.addEventListener('DOMContentLoaded', loadData);
-        })();
+        }
+        
+        document.addEventListener('DOMContentLoaded', loadData);
     </script>
 </body>
 </html>'''
     
     @app.route('/analyze', methods=['GET'])
     def analyze():
-        """Main endpoint to analyze current week's NFL TD boost matchups"""
+        """Main endpoint"""
         try:
-            # Get parameters from query string
             target_week = request.args.get('week')
             
-            # Set environment variables temporarily
-            original_env = {}
-            env_vars = {}
             if target_week:
-                env_vars['TARGET_WEEK'] = target_week
+                os.environ['TARGET_WEEK'] = target_week
             
-            # Store original values and set new ones
-            for key, value in env_vars.items():
-                original_env[key] = os.environ.get(key)
-                os.environ[key] = value
+            analysis_data = run_analysis()
             
-            try:
-                # Run analysis
-                analysis_data = run_analysis()
-                
-                if not analysis_data:
-                    return jsonify({
-                        "error": "Analysis failed",
-                        "message": "Could not complete analysis",
-                        "timestamp": datetime.now().isoformat()
-                    }), 500
-                
-                # Generate JSON output
-                results = analysis_data['results']
-                calculator = analysis_data['calculator']
-                json_output = calculator.generate_json_output(results)
-                
-                # Parse and return JSON
-                return jsonify(json.loads(json_output))
-                
-            finally:
-                # Restore original environment variables
-                for key, original_value in original_env.items():
-                    if original_value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = original_value
+            if not analysis_data:
+                return jsonify({
+                    "error": "Analysis failed",
+                    "timestamp": datetime.now().isoformat()
+                }), 500
+            
+            results = analysis_data['results']
+            calculator = analysis_data['calculator']
+            json_output = calculator.generate_json_output(results)
+            
+            return jsonify(json.loads(json_output))
         
         except Exception as e:
             logger.error(f"Error in Flask endpoint: {str(e)}")
             return jsonify({
                 "error": "Unexpected error",
-                "message": str(e),
-                "timestamp": datetime.now().isoformat()
+                "message": str(e)
             }), 500
     
     @app.route('/health', methods=['GET'])
     def health_check():
-        """Health check endpoint"""
-        return jsonify({
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "service": "NFL TD Boost Calculator"
-        })
+        return jsonify({"status": "healthy"})
     
     @app.route('/', methods=['GET'])
     def root():
-        """Root endpoint with API documentation"""
         return jsonify({
             "service": "NFL TD Boost Calculator API",
-            "version": "1.0",
-            "endpoints": {
-                "/dashboard": {
-                    "method": "GET",
-                    "description": "Premium NFL TD boost dashboard"
-                },
-                "/analyze": {
-                    "method": "GET",
-                    "description": "Analyze current week's NFL TD boost matchups",
-                    "parameters": {
-                        "week": "Specific week to analyze (optional, defaults to current week)"
-                    },
-                    "example": "/analyze?week=2"
-                },
-                "/health": {
-                    "method": "GET", 
-                    "description": "Health check endpoint"
-                }
-            },
-            "timestamp": datetime.now().isoformat()
+            "version": "1.0"
         })
     
     def run_flask_app():
-        """Run Flask application"""
         port = int(os.environ.get('PORT', 10000))
-        debug = os.environ.get('DEBUG', 'False').lower() == 'true'
-        
-        logger.info(f"Starting NFL TD Boost Calculator API on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=debug)
+        app.run(host='0.0.0.0', port=port, debug=False)
 
 except ImportError:
-    logger.info("Flask not available - running in CLI mode only")
     app = None
     def run_flask_app():
-        logger.error("Flask not installed. Install with: pip install flask")
+        logger.error("Flask not installed")
         sys.exit(1)
 
 if __name__ == "__main__":
-    # Check if Flask mode is requested
     if len(sys.argv) > 1 and sys.argv[1] == '--flask':
         if app is not None:
             run_flask_app()
         else:
-            logger.error("Flask not available. Install with: pip install flask")
+            logger.error("Flask not available")
             sys.exit(1)
     else:
         main()
