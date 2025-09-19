@@ -314,7 +314,7 @@ class TeamAnalysisService:
             raise
 
 # =========================
-# NFLTDBoostCalculator (Railway) with LOCAL CALC LOGIC - FIXED VERSION
+# NFLTDBoostCalculator (Railway) with LOCAL CALC LOGIC (pandas 2.1.4 safe)
 # =========================
 class NFLTDBoostCalculator:
     def __init__(self, service_instance=None):
@@ -402,7 +402,7 @@ class NFLTDBoostCalculator:
         return offense_results, defense_results
 
     def calculate_all_drives_stats(self, df, year_label=""):
-        """Calculate all drives TD stats - FIXED VERSION without include_groups"""
+        """Calculate all drives TD stats"""
         print(f"Calculating {year_label} all drives stats...")
 
         # Filter for regular season only
@@ -413,7 +413,7 @@ class NFLTDBoostCalculator:
 
         all_drives = reg_season.groupby(['game_id', 'posteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
 
-        # Offensive stats - FIXED: removed include_groups=False
+        # Offensive stats (no include_groups kw for pandas 2.1.4)
         offense_all = all_drives.groupby('posteam').apply(
             lambda x: {
                 'total_drives': len(x),
@@ -422,7 +422,7 @@ class NFLTDBoostCalculator:
             }
         ).to_dict()
 
-        # Defensive stats - FIXED: removed include_groups=False
+        # Defensive stats (no include_groups kw for pandas 2.1.4)
         all_drives_def = reg_season.groupby(['game_id', 'defteam', 'fixed_drive']).agg({'touchdown': 'max'}).reset_index()
         defense_all = all_drives_def.groupby('defteam').apply(
             lambda x: {
