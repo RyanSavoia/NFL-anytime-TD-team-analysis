@@ -27,8 +27,6 @@ class NFLTDBoostCalculator:
         self.data_loaded = False
         
         try:
-            self.load_data()
-            self.data_loaded = True
             logger.info(f"Successfully initialized TD boost calculator: {performance_year} analysis")
         except Exception as e:
             logger.error(f"Failed to initialize calculator: {str(e)}")
@@ -332,6 +330,7 @@ class NFLTDBoostCalculator:
         try:
             if not self.data_loaded:
                 self.load_data()
+                self.data_loaded = True
             
             results = {
                 'matchup': f"{offense_team} vs {defense_team}",
@@ -462,6 +461,7 @@ class NFLTDBoostCalculator:
         try:
             if not self.data_loaded:
                 self.load_data()
+                self.data_loaded = True
             
             # Get current week matchups
             matchups = self.get_week_matchups(week_num)
@@ -529,6 +529,7 @@ class NFLTDBoostCalculator:
         try:
             if not self.data_loaded:
                 self.load_data()
+                self.data_loaded = True
             
             summary = {
                 'team': team,
