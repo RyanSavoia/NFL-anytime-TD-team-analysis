@@ -115,7 +115,7 @@ class NFLTDBoostCalculator:
                 'total_drives': len(x),
                 'total_tds': float(x['touchdown'].sum()),
                 'total_td_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
-            }, include_groups=False
+            }
         ).to_dict()
         
         # Defensive stats  
@@ -125,7 +125,7 @@ class NFLTDBoostCalculator:
                 'total_drives_faced': len(x),
                 'total_tds_allowed': float(x['touchdown'].sum()),
                 'total_td_allow_rate': round(float(x['touchdown'].sum()) / len(x) * 100, 1)
-            }, include_groups=False
+            }
         ).to_dict()
         
         return offense_all, defense_all
