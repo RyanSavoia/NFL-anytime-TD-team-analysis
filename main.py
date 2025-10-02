@@ -30,7 +30,7 @@ class TeamAnalysisService:
             "Carolina Panthers": "CAR","Chicago Bears": "CHI","Cincinnati Bengals": "CIN","Cleveland Browns": "CLE",
             "Dallas Cowboys": "DAL","Denver Broncos": "DEN","Detroit Lions": "DET","Green Bay Packers": "GB",
             "Houston Texans": "HOU","Indianapolis Colts": "IND","Jacksonville Jaguars": "JAX","Kansas City Chiefs": "KC",
-            "Los Angeles Rams": "LAR","Miami Dolphins": "MIA","Minnesota Vikings": "MIN","New England Patriots": "NE",
+            "Los Angeles Rams": "LA","Miami Dolphins": "MIA","Minnesota Vikings": "MIN","New England Patriots": "NE",
             "New Orleans Saints": "NO","New York Giants": "NYG","New York Jets": "NYJ","Las Vegas Raiders": "LV",
             "Philadelphia Eagles": "PHI","Pittsburgh Steelers": "PIT","Los Angeles Chargers": "LAC",
             "San Francisco 49ers": "SF","Seattle Seahawks": "SEA","Tampa Bay Buccaneers": "TB",
