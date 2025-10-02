@@ -412,14 +412,6 @@ class NFLTDBoostCalculator:
                     upcoming = self.schedule_data[self.schedule_data['gameday'].dt.date >= today].sort_values('gameday')
                     if not upcoming.empty:
                         next_week = upcoming['week'].iloc[0]
-                        weekday = today.weekday()
-                        if weekday in [1,2]:
-                            current_week_games = self.schedule_data[
-                                (self.schedule_data['week'] == max_completed_week+1) &
-                                (self.schedule_data['gameday'].dt.date >= today)
-                            ]
-                            if current_week_games.empty:
-                                next_week = max_completed_week + 2
                         print(f"Current week determined: {next_week} (max completed: {max_completed_week}, today: {today})")
                         return int(next_week)
                 except Exception as e:
